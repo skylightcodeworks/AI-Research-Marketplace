@@ -7,6 +7,22 @@ from django.conf import settings
 from django.shortcuts import redirect
 from django.utils.deprecation import MiddlewareMixin
 
+from .cookie_auth import COOKIE_NAME, HardcodedAdminUser, verify_signed_cookie
+
+
+class CookieAuthMiddleware(MiddlewareMixin):
+    """
+    If valid hardcoded-admin cookie is present, set request.user to a fake
+    staff/superuser so the rest of the app sees the user as logged in (no DB).
+    """
+
+    def process_request(self, request):
+        if not request.user.is_authenticated:
+            raw = request.COOKIES.get(COOKIE_NAME)
+            if raw and verify_signed_cookie(raw):
+                request.user = HardcodedAdminUser()
+        return None
+
 
 class LoginRequiredMiddleware(MiddlewareMixin):
     """
