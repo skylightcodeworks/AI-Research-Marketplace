@@ -3,6 +3,7 @@ URL configuration for config project.
 """
 
 from django.contrib import admin
+from django.contrib.auth.views import LoginView, LogoutView
 from django.urls import path, include
 from drf_spectacular.views import (
     SpectacularAPIView,
@@ -20,6 +21,13 @@ from apollo_ingest.views import (
 
 urlpatterns = [
     path("admin/", admin.site.urls),
+    # Auth: login required for entire site
+    path(
+        "login/",
+        LoginView.as_view(template_name="registration/login.html"),
+        name="login",
+    ),
+    path("logout/", LogoutView.as_view(), name="logout"),
     # UI
     path("", company_search_view, name="company_search"),
     path("openai-thinking/", include("openai_thinking.urls")),
