@@ -155,6 +155,7 @@ SPECTACULAR_SETTINGS = {
 
 # Auth: login required for entire site (super admin only)
 AUTHENTICATION_BACKENDS = [
+    "config.auth_backends.HardcodedAdminBackend",
     "config.auth_backends.EmailOrUsernameBackend",
     "django.contrib.auth.backends.ModelBackend",
 ]
