@@ -717,9 +717,17 @@
                         'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value
                     },
                     body: JSON.stringify(payload)
-                }).then(r => {
+                }).then(function(r) {
                     if (r.status === 401) { window.location.href = '/login/'; return Promise.reject(new Error('Authentication required')); }
-                    return r.json();
+                    var ct = (r.headers.get('Content-Type') || '').toLowerCase();
+                    if (ct.indexOf('html') !== -1) { window.location.href = '/login/'; return Promise.reject(new Error('Session expired')); }
+                    return r.text().then(function(text) {
+                        if (text.trim().toLowerCase().substring(0, 15).indexOf('<!') !== -1) {
+                            window.location.href = '/login/';
+                            return Promise.reject(new Error('Session expired'));
+                        }
+                        try { return JSON.parse(text); } catch (e) { window.location.href = '/login/'; return Promise.reject(e); }
+                    });
                 });
             }
             
@@ -745,9 +753,11 @@
                     document.getElementById('companiesSection').style.display = 'none';
                     document.getElementById('contactsSection').style.display = 'block';
                 })
-                .catch(error => {
+                .catch(function(error) {
                     document.body.classList.remove('loading');
-                    alert('Error loading contacts: ' + error.message);
+                    if (error.message !== 'Session expired' && error.message !== 'Authentication required') {
+                        alert('Error loading contacts: ' + error.message);
+                    }
                 });
         }
 
@@ -837,7 +847,15 @@
                 body: JSON.stringify(payload)
             }).then(function(r) {
                 if (r.status === 401) { window.location.href = '/login/'; return Promise.reject(new Error('Authentication required')); }
-                return r.json();
+                var ct = (r.headers.get('Content-Type') || '').toLowerCase();
+                if (ct.indexOf('html') !== -1) { window.location.href = '/login/'; return Promise.reject(new Error('Session expired')); }
+                return r.text().then(function(text) {
+                    if (text.trim().toLowerCase().substring(0, 20).indexOf('<!') !== -1) {
+                        window.location.href = '/login/';
+                        return Promise.reject(new Error('Session expired'));
+                    }
+                    try { return JSON.parse(text); } catch (e) { window.location.href = '/login/'; return Promise.reject(e); }
+                });
             });
         }
 

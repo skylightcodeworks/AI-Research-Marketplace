@@ -54,6 +54,7 @@ def login_view(request):
         COOKIE_NAME,
         make_signed_cookie_value(),
         max_age=60 * 60 * 24 * 7,  # 7 days
+        path="/",
         httponly=True,
         secure=not settings.DEBUG,
         samesite="Lax",
