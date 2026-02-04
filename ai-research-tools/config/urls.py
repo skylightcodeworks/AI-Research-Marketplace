@@ -4,14 +4,13 @@ URL configuration for config project.
 
 from django.contrib import admin
 from django.urls import path, include
-
-from config.views import login_view, logout_view
 from drf_spectacular.views import (
     SpectacularAPIView,
     SpectacularSwaggerView,
     SpectacularRedocView,
 )
 
+from config.simple_auth import login_view, logout_view
 from apollo_ingest.views import (
     company_search_view,
     CompanySearchAPIView,
@@ -22,7 +21,7 @@ from apollo_ingest.views import (
 
 urlpatterns = [
     path("admin/", admin.site.urls),
-    # Auth: cookie-based login (no DB) for hardcoded admin
+    # Auth: login required for entire site
     path("login/", login_view, name="login"),
     path("logout/", logout_view, name="logout"),
     # UI

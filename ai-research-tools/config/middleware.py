@@ -1,35 +1,17 @@
 """
 Middleware: require login for entire site. Only staff/superuser can access.
 Unauthenticated or non-staff users are redirected to login page.
-API requests get 401 JSON instead of redirect so frontend doesn't receive HTML.
 """
 
 from django.conf import settings
-from django.http import JsonResponse
 from django.shortcuts import redirect
 from django.utils.deprecation import MiddlewareMixin
-
-from .cookie_auth import COOKIE_NAME, HardcodedAdminUser, verify_signed_cookie
-
-
-class CookieAuthMiddleware(MiddlewareMixin):
-    """
-    If valid hardcoded-admin cookie is present, set request.user to a fake
-    staff/superuser so the rest of the app sees the user as logged in (no DB).
-    """
-
-    def process_request(self, request):
-        if not request.user.is_authenticated:
-            raw = request.COOKIES.get(COOKIE_NAME)
-            if raw and verify_signed_cookie(raw):
-                request.user = HardcodedAdminUser()
-        return None
 
 
 class LoginRequiredMiddleware(MiddlewareMixin):
     """
-    Redirect to login if user is not authenticated.
-    Only staff/superuser can access the app (super admin only).
+    DB-free auth gate for serverless deploys (Vercel).
+    Uses signed-cookie session flag `super_admin=True`.
     """
 
     def process_request(self, request):
@@ -38,28 +20,14 @@ class LoginRequiredMiddleware(MiddlewareMixin):
         if path == "/logout/":
             return None
         if path == "/login/":
-            # Already logged-in staff/superuser → redirect to home
-            if request.user.is_authenticated and (
-                request.user.is_staff or request.user.is_superuser
-            ):
+            # Already logged-in → redirect to home
+            if request.session.get("super_admin") is True:
                 return redirect(settings.LOGIN_REDIRECT_URL)
             return None
         if path.startswith("/static/") or path == "/favicon.ico":
             return None
-        # Require authenticated user
-        if not request.user.is_authenticated:
-            if path.startswith("/api/"):
-                return JsonResponse(
-                    {"detail": "Authentication required"},
-                    status=401,
-                )
-            return redirect(settings.LOGIN_URL)
-        # Require staff or superuser (super admin only)
-        if not (request.user.is_staff or request.user.is_superuser):
-            if path.startswith("/api/"):
-                return JsonResponse(
-                    {"detail": "Authentication required"},
-                    status=401,
-                )
+
+        # Require super admin session
+        if request.session.get("super_admin") is not True:
             return redirect(settings.LOGIN_URL)
         return None

@@ -711,24 +711,12 @@
                 
                 return fetch('/api/people/search/', {
                     method: 'POST',
-                    credentials: 'include',
                     headers: {
                         'Content-Type': 'application/json',
                         'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value
                     },
                     body: JSON.stringify(payload)
-                }).then(function(r) {
-                    if (r.status === 401) { window.location.href = '/login/'; return Promise.reject(new Error('Authentication required')); }
-                    var ct = (r.headers.get('Content-Type') || '').toLowerCase();
-                    if (ct.indexOf('html') !== -1) { window.location.href = '/login/'; return Promise.reject(new Error('Session expired')); }
-                    return r.text().then(function(text) {
-                        if (text.trim().toLowerCase().substring(0, 15).indexOf('<!') !== -1) {
-                            window.location.href = '/login/';
-                            return Promise.reject(new Error('Session expired'));
-                        }
-                        try { return JSON.parse(text); } catch (e) { window.location.href = '/login/'; return Promise.reject(e); }
-                    });
-                });
+                }).then(r => r.json());
             }
             
             doFetch(true)
@@ -753,11 +741,9 @@
                     document.getElementById('companiesSection').style.display = 'none';
                     document.getElementById('contactsSection').style.display = 'block';
                 })
-                .catch(function(error) {
+                .catch(error => {
                     document.body.classList.remove('loading');
-                    if (error.message !== 'Session expired' && error.message !== 'Authentication required') {
-                        alert('Error loading contacts: ' + error.message);
-                    }
+                    alert('Error loading contacts: ' + error.message);
                 });
         }
 
@@ -842,21 +828,9 @@
             if (filters.seniorities && filters.seniorities.length) payload.seniorities = filters.seniorities;
             return fetch('/api/people/search/', {
                 method: 'POST',
-                credentials: 'include',
                 headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
                 body: JSON.stringify(payload)
-            }).then(function(r) {
-                if (r.status === 401) { window.location.href = '/login/'; return Promise.reject(new Error('Authentication required')); }
-                var ct = (r.headers.get('Content-Type') || '').toLowerCase();
-                if (ct.indexOf('html') !== -1) { window.location.href = '/login/'; return Promise.reject(new Error('Session expired')); }
-                return r.text().then(function(text) {
-                    if (text.trim().toLowerCase().substring(0, 20).indexOf('<!') !== -1) {
-                        window.location.href = '/login/';
-                        return Promise.reject(new Error('Session expired'));
-                    }
-                    try { return JSON.parse(text); } catch (e) { window.location.href = '/login/'; return Promise.reject(e); }
-                });
-            });
+            }).then(function(r) { return r.json(); });
         }
 
         // Export: 1) call people search + enrich per company (visible in Network), 2) send data to export → ZIP
@@ -907,13 +881,11 @@
                     console.log('Export: sending', companiesWithPeople.length, 'companies with people to export API');
                     return fetch('/api/export/companies/', {
                         method: 'POST',
-                        credentials: 'include',
                         headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken },
                         body: JSON.stringify({ companies: companiesWithPeople, job_titles: filters.jobTitles || [], seniorities: filters.seniorities || [] })
                     });
                 })
                 .then(function(r) {
-                    if (r.status === 401) { window.location.href = '/login/'; return Promise.reject(new Error('Authentication required')); }
                     if (!r.ok) return r.json().then(function(j) { return Promise.reject(new Error(j.error || r.statusText)); });
                     return r.blob();
                 })

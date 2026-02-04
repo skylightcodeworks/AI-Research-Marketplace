@@ -56,6 +56,9 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
 ]
 
+# Serverless-friendly sessions (no DB required)
+SESSION_ENGINE = "django.contrib.sessions.backends.signed_cookies"
+
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
@@ -65,7 +68,6 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
-    "config.middleware.CookieAuthMiddleware",
     "config.middleware.LoginRequiredMiddleware",
 ]
 
@@ -155,11 +157,6 @@ SPECTACULAR_SETTINGS = {
 }
 
 # Auth: login required for entire site (super admin only)
-AUTHENTICATION_BACKENDS = [
-    "config.auth_backends.HardcodedAdminBackend",
-    "config.auth_backends.EmailOrUsernameBackend",
-    "django.contrib.auth.backends.ModelBackend",
-]
 LOGIN_URL = "/login/"
 LOGIN_REDIRECT_URL = "/"
 LOGOUT_REDIRECT_URL = "/login/"
