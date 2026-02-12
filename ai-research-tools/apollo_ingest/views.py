@@ -449,6 +449,15 @@ class PeopleSearchAPIView(APIView):
             # Apollo returns 'people' for people data (no email/linkedin from search)
             people = normalize_people(response.get("people", []))
             pagination = response.get("pagination", {})
+            # Total count for badge & pagination (Apollo may use total_entries or total_count)
+            total_count = (
+                pagination.get("total_entries")
+                or pagination.get("total_count")
+                or response.get("total_entries")
+                or response.get("total_count")
+            )
+            if total_count is None:
+                total_count = 0
 
             # Enrich each person to get email, linkedin_url, etc. (consumes credits)
             ids = [p["id"] for p in people if p.get("id")]
@@ -459,7 +468,7 @@ class PeopleSearchAPIView(APIView):
             return Response(
                 {
                     "people": people,
-                    "total_count": pagination.get("total_entries", 0),
+                    "total_count": total_count,
                     "page": pagination.get("page", 1),
                     "per_page": pagination.get("per_page", 25),
                 }

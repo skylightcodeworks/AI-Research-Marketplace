@@ -592,6 +592,7 @@
                     <div class="results-header">
                         <h5>Contacts</h5>
                         <span class="badge bg-light text-dark px-3 py-2" id="contactsCount">0 contacts found</span>
+                        <!-- <span class="text-muted small ms-2" id="contactsCountHint">(filtered by Job Titles &amp; Seniorities)</span> -->
                     </div>
                     <div class="contacts-header">
                         <div class="d-flex align-items-center gap-3">
@@ -622,6 +623,20 @@
                         <div style="font-size: 3.5rem; margin-bottom: 15px;">&#x1F465;</div>
                         <h5>No contacts found</h5>
                         <p class="text-muted">No contacts available for this company</p>
+                    </div>
+                    <!-- People/Contacts pagination (Apollo API page & per_page) -->
+                    <div id="contactsPagination" class="d-flex align-items-center gap-3 flex-wrap mt-3 mb-2" style="display: none;">
+                        <span class="text-muted">Page</span>
+                        <input type="number" id="contactsPageInput" min="1" value="1" class="form-control" style="width: 80px;">
+                        <span class="text-muted">of <span id="contactsTotalPages">1</span></span>
+                        <span class="text-muted ms-2">Per page</span>
+                        <select id="contactsPerPageSelect" class="form-select" style="width: 90px;">
+                            <option value="10">10</option>
+                            <option value="25" selected>25</option>
+                            <option value="50">50</option>
+                            <option value="100">100</option>
+                        </select>
+                        <button type="button" class="btn btn-sm btn-outline-primary" id="contactsPageGo">Go</button>
                     </div>
                 </div>
             </div>
@@ -681,34 +696,59 @@
             return { jobTitles: jobTitles || [], seniorities: seniorities || [] };
         }
 
-        // Handle company row click
+        // Handle company row click (load contacts page 1, default per_page)
         document.querySelectorAll('.clickable-row').forEach(row => {
             row.addEventListener('click', function() {
                 const companyId = this.dataset.companyId;
                 const companyName = this.dataset.companyName;
                 const companyDomain = this.dataset.companyDomain;
-                
-                loadContacts(companyId, companyName, companyDomain);
+                loadContacts(companyId, companyName, companyDomain, 1, null);
             });
         });
 
-        // Load contacts for a company (tries with org id + domain, then domain-only if 0 results)
-        function loadContacts(companyId, companyName, companyDomain) {
+        // People pagination: Go button and per_page change (re-fetch from Apollo with page & per_page)
+        function applyContactsPagination() {
+            var page = parseInt(document.getElementById('contactsPageInput').value, 10) || 1;
+            var perPage = parseInt(document.getElementById('contactsPerPageSelect').value, 10) || 25;
+            if (!currentContactsCompany.id && !currentContactsCompany.domain) return;
+            loadContacts(currentContactsCompany.id, currentContactsCompany.name, currentContactsCompany.domain, page, perPage);
+        }
+        var contactsPageGo = document.getElementById('contactsPageGo');
+        if (contactsPageGo) contactsPageGo.addEventListener('click', applyContactsPagination);
+        var contactsPageInput = document.getElementById('contactsPageInput');
+        if (contactsPageInput) contactsPageInput.addEventListener('keypress', function(e) { if (e.key === 'Enter') applyContactsPagination(); });
+        var contactsPerPageSelect = document.getElementById('contactsPerPageSelect');
+        if (contactsPerPageSelect) contactsPerPageSelect.addEventListener('change', function() {
+            document.getElementById('contactsPageInput').value = 1;
+            applyContactsPagination();
+        });
+
+        // Current company for people pagination (so we can re-fetch on page/per_page change)
+        var currentContactsCompany = { id: null, name: null, domain: null };
+
+        // Load contacts for a company; page and perPage go to Apollo people API
+        function loadContacts(companyId, companyName, companyDomain, page, perPage) {
+            page = page != null && page >= 1 ? parseInt(page, 10) : 1;
+            perPage = perPage != null && perPage >= 1 ? Math.min(100, parseInt(perPage, 10)) : 25;
+            currentContactsCompany = { id: companyId, name: companyName, domain: companyDomain };
+
             document.body.classList.add('loading');
             document.getElementById('selectedCompanyName').textContent = companyName;
-            
+
+            var pageInput = document.getElementById('contactsPageInput');
+            var perPageSelect = document.getElementById('contactsPerPageSelect');
+            if (pageInput) pageInput.value = page;
+            if (perPageSelect) perPageSelect.value = perPage;
+
             const filters = getSelectedFilters();
-            
-            function doFetch(useOrgId) {
-                const payload = {
-                    page: 1,
-                    per_page: 25
-                };
+
+            function doFetch(useOrgId, p, pp) {
+                const payload = { page: p, per_page: pp };
                 if (useOrgId && companyId) payload.organization_id = companyId;
                 if (companyDomain) payload.domains = companyDomain;
                 if (filters.jobTitles.length > 0) payload.job_titles = filters.jobTitles;
                 if (filters.seniorities.length > 0) payload.seniorities = filters.seniorities;
-                
+
                 return fetch('/api/people/search/', {
                     method: 'POST',
                     headers: {
@@ -718,26 +758,26 @@
                     body: JSON.stringify(payload)
                 }).then(r => r.json());
             }
-            
-            doFetch(true)
+
+            doFetch(true, page, perPage)
                 .then(data => {
                     if (data.error) {
                         document.body.classList.remove('loading');
                         alert('Error: ' + data.error);
                         return;
                     }
-                    // If 0 contacts but we have domain, retry with domain-only (Apollo sometimes matches better by domain)
-                    if ((!data.people || data.people.length === 0) && companyDomain && companyId) {
-                        return doFetch(false).then(data2 => {
+                    // If 0 contacts but we have domain, retry with domain-only (Apollo sometimes matches better by domain) – only on first page
+                    if ((!data.people || data.people.length === 0) && companyDomain && companyId && page === 1) {
+                        return doFetch(false, 1, perPage).then(data2 => {
                             document.body.classList.remove('loading');
                             if (data2.error) { alert('Error: ' + data2.error); return; }
-                            displayContacts(data2.people || [], data2.total_count || 0);
+                            displayContacts(data2.people || [], data2.total_count, data2.page, data2.per_page);
                             document.getElementById('companiesSection').style.display = 'none';
                             document.getElementById('contactsSection').style.display = 'block';
                         });
                     }
                     document.body.classList.remove('loading');
-                    displayContacts(data.people || [], data.total_count || 0);
+                    displayContacts(data.people || [], data.total_count, data.page, data.per_page);
                     document.getElementById('companiesSection').style.display = 'none';
                     document.getElementById('contactsSection').style.display = 'block';
                 })
@@ -747,21 +787,41 @@
                 });
         }
 
-        // Display contacts in table
-        function displayContacts(contacts, totalCount) {
+        // Display contacts: total = API total_count (filtered by job title & seniorities). Pagination from total.
+        function displayContacts(contacts, totalCount, page, perPage) {
             const tbody = document.getElementById('contactsTableBody');
             const noContactsMsg = document.getElementById('noContactsMessage');
             const table = document.getElementById('contactsTable');
-            
-            document.getElementById('contactsCount').textContent = totalCount + ' contacts found';
-            
+            const paginationEl = document.getElementById('contactsPagination');
+
+            // Use API total when present (>= 0); else when we have rows show at least current page size so count isn't 0
+            var total = (totalCount !== undefined && totalCount !== null && totalCount >= 0)
+                ? totalCount
+                : ((contacts && contacts.length > 0) ? contacts.length : 0);
+            document.getElementById('contactsCount').textContent = total + ' contacts found';
+
+            page = page != null ? parseInt(page, 10) : 1;
+            perPage = perPage != null ? parseInt(perPage, 10) : 25;
+            var totalPages = Math.max(1, Math.ceil(total / perPage));
+
+            if (paginationEl) {
+                paginationEl.style.display = (contacts && contacts.length > 0) ? 'flex' : 'none';
+                var pageInput = document.getElementById('contactsPageInput');
+                pageInput.value = page;
+                pageInput.min = 1;
+                pageInput.max = totalPages;
+                document.getElementById('contactsTotalPages').textContent = totalPages;
+                document.getElementById('contactsPerPageSelect').value = perPage;
+            }
+
             if (!contacts || contacts.length === 0) {
                 tbody.innerHTML = '';
                 table.style.display = 'none';
                 noContactsMsg.style.display = 'block';
+                if (paginationEl) paginationEl.style.display = 'none';
                 return;
             }
-            
+
             table.style.display = 'table';
             noContactsMsg.style.display = 'none';
             
