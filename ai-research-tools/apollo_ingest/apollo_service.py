@@ -52,6 +52,42 @@ def _log_apollo_request(
     print(msg)
 
 
+def _log_apollo_response(endpoint: str, data: dict, extra: Optional[dict] = None):
+    """Log Apollo API response counts: companies, people, tags, or bulk_match."""
+    lines = ["-------- Apollo API response --------"]
+    if "mixed_companies" in endpoint or "mixed_companies/search" in endpoint:
+        orgs = data.get("organizations") or data.get("accounts") or []
+        total = (data.get("pagination") or {}).get("total_entries") or len(orgs)
+        lines.append("Endpoint: mixed_companies/search")
+        lines.append("Companies in this page: %s" % len(orgs))
+        lines.append("Total entries (pagination): %s" % total)
+    elif "mixed_people" in endpoint or "api_search" in endpoint:
+        people = data.get("people") or []
+        pag = data.get("pagination") or {}
+        total = pag.get("total_entries") or pag.get("total_count") or data.get("total_entries") or data.get("total_count") or len(people)
+        lines.append("Endpoint: mixed_people/api_search")
+        lines.append("People in this page: %s" % len(people))
+        lines.append("Total entries (pagination): %s" % total)
+    elif "bulk_match" in endpoint or "people/bulk" in endpoint:
+        matches = data.get("matches") or []
+        lines.append("Endpoint: people/bulk_match")
+        lines.append("Enriched count: %s" % len(matches))
+    elif "tags" in endpoint:
+        tags = data.get("tags") or []
+        lines.append("Endpoint: tags/search")
+        lines.append("Tags count: %s" % len(tags))
+    else:
+        lines.append("Endpoint: %s" % endpoint)
+        lines.append("Response keys: %s" % list(data.keys())[:10])
+    if extra:
+        for k, v in extra.items():
+            lines.append("%s: %s" % (k, v))
+    lines.append("--------------------------------")
+    msg = "\n".join(lines)
+    logger.info(msg)
+    print(msg)
+
+
 def _get_headers():
     """Get headers for Apollo API requests."""
     api_key = os.getenv("APOLLO_API_KEY")
@@ -107,7 +143,9 @@ def search_tags(q_tag_fuzzy_name: str) -> dict:
         timeout=30,
     )
     r.raise_for_status()
-    return r.json()
+    data = r.json()
+    _log_apollo_response(APOLLO_TAGS_SEARCH_URL, data)
+    return data
 
 
 def search_companies(payload: dict) -> dict:
@@ -124,7 +162,9 @@ def search_companies(payload: dict) -> dict:
             "Apollo company search 422 (invalid payload): %s" % (err_body,)
         )
     r.raise_for_status()
-    return r.json()
+    data = r.json()
+    _log_apollo_response(APOLLO_COMPANY_SEARCH_URL, data)
+    return data
 
 
 def search_people(payload: dict) -> dict:
@@ -133,7 +173,9 @@ def search_people(payload: dict) -> dict:
     _log_apollo_request(APOLLO_PEOPLE_SEARCH_URL, headers, req_body=payload)
     r = _post_with_retry(APOLLO_PEOPLE_SEARCH_URL, payload, headers)
     r.raise_for_status()
-    return r.json()
+    data = r.json()
+    _log_apollo_response(APOLLO_PEOPLE_SEARCH_URL, data)
+    return data
 
 
 def enrich_people_bulk(
@@ -175,6 +217,7 @@ def enrich_people_bulk(
             )
             r.raise_for_status()
             data = r.json()
+            _log_apollo_response(APOLLO_PEOPLE_BULK_ENRICH_URL, data)
             for match in data.get("matches") or []:
                 pid = match.get("id")
                 if pid is not None:
