@@ -635,13 +635,21 @@ def export_companies_view(request):
             {"error": "No companies selected"}, status=status.HTTP_400_BAD_REQUEST
         )
     # Export: use people[] from request if present (frontend called people/search per company); else fetch server-side
+    companies_with_people = sum(1 for c in companies if isinstance(c.get("people"), list) and len(c.get("people") or []) > 0)
+    fetch_count = len(companies) - companies_with_people
     log_apollo_credits(
         request.path or "/api/export/companies/",
         0,
-        detail="per-company credits logged below when people are fetched",
+        detail="%s companies with people[] from request, %s will fetch server-side (see below)" % (companies_with_people, fetch_count),
     )
-    logger.info("Export: request for %s company(ies)", len(companies))
+    logger.info(
+        "Export: %s company(ies) | %s with people[] (no extra credits) | %s to fetch server-side (credits = search + enrich per company)",
+        len(companies),
+        companies_with_people,
+        fetch_count,
+    )
     zip_buffer = io.BytesIO()
+    server_side_fetches = 0
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         for c in companies:
             cid = c.get("id")
@@ -649,6 +657,7 @@ def export_companies_view(request):
             cdomain = (c.get("domain") or c.get("primary_domain") or "").strip()
             people = c.get("people") if isinstance(c.get("people"), list) else []
             if not people:
+                server_side_fetches += 1
                 try:
                     logger.info(
                         "Export: fetching people for company id=%s name=%s", cid, cname
@@ -693,6 +702,16 @@ def export_companies_view(request):
             safe_name = _sanitize_filename(cname) + ".xlsx"
             zf.writestr(safe_name, xlsx_buffer.getvalue())
     zip_buffer.seek(0)
+    if server_side_fetches > 0:
+        logger.info(
+            "Export done: %s companies total, %s fetched server-side (credits burned above per company: search + enrich)",
+            len(companies),
+            server_side_fetches,
+        )
+        print(
+            "====== Export summary: %s companies, %s server-side fetches (credits = lines above) ======"
+            % (len(companies), server_side_fetches)
+        )
     response = HttpResponse(zip_buffer.getvalue(), content_type="application/zip")
     response["Content-Disposition"] = 'attachment; filename="companies_export.zip"'
     return response

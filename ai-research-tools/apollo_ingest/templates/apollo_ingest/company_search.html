@@ -880,8 +880,10 @@
         }
 
         // People search API call (same as loadContacts) – returns people with email enrich
-        function fetchPeopleForCompany(company, filters, csrfToken) {
-            var payload = { page: 1, per_page: 100 };
+        // Export uses per_page 25 to limit credit burn; increase if you need more contacts per company
+        function fetchPeopleForCompany(company, filters, csrfToken, perPage) {
+            perPage = perPage != null ? perPage : 25;
+            var payload = { page: 1, per_page: perPage };
             if (company.id) payload.organization_id = company.id;
             if (company.domain) payload.domains = company.domain;
             if (filters.jobTitles && filters.jobTitles.length) payload.job_titles = filters.jobTitles;
@@ -917,12 +919,14 @@
             console.log('Export: filters (same as frontend people)', { jobTitles: filters.jobTitles, seniorities: filters.seniorities });
             console.log('Export: calling people/search for', companies.length, 'company(ies)');
             var csrfToken = csrfEl.value;
+            // Export: 25 contacts per company to limit Apollo credits (was 100)
+            var exportPerPage = 25;
             function fetchOne(c) {
-                return fetchPeopleForCompany(c, filters, csrfToken)
+                return fetchPeopleForCompany(c, filters, csrfToken, exportPerPage)
                     .then(function(data) {
                         var people = (data && data.people) ? data.people : [];
                         if (!people.length && c.domain && c.id) {
-                            return fetchPeopleForCompany({ id: null, domain: c.domain, name: c.name }, filters, csrfToken)
+                            return fetchPeopleForCompany({ id: null, domain: c.domain, name: c.name }, filters, csrfToken, exportPerPage)
                                 .then(function(data2) { return (data2 && data2.people) ? data2.people : []; });
                         }
                         return people;
