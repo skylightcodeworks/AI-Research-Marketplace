@@ -1,5 +1,9 @@
+import json
+import logging
 import os
 import time
+from typing import Optional
+
 import requests
 
 APOLLO_COMPANY_SEARCH_URL = "https://api.apollo.io/api/v1/mixed_companies/search"
@@ -12,6 +16,40 @@ APOLLO_TAGS_SEARCH_URL = "https://app.apollo.io/api/v1/tags/search"
 # Timeout in seconds (Apollo can be slow on large result sets). Override via APOLLO_REQUEST_TIMEOUT.
 DEFAULT_TIMEOUT = int(os.getenv("APOLLO_REQUEST_TIMEOUT", "120"))
 MAX_RETRIES = 2
+
+logger = logging.getLogger(__name__)
+
+
+def _mask_api_key(key: str) -> str:
+    """Mask API key for logging (show last 4 chars only)."""
+    if not key or len(key) < 4:
+        return "***"
+    return "***" + key[-4:]
+
+
+def _log_apollo_request(
+    endpoint: str,
+    headers: dict,
+    query_params: Optional[dict] = None,
+    req_body: Optional[dict] = None,
+):
+    """Log Apollo API call: endpoint, headers (key masked), query params, body."""
+    log_headers = dict(headers)
+    if "X-Api-Key" in log_headers:
+        log_headers["X-Api-Key"] = _mask_api_key(log_headers["X-Api-Key"])
+    lines = [
+        "-------- Apollo API request --------",
+        "Endpoint: %s" % endpoint,
+        "Headers: %s" % json.dumps(log_headers, sort_keys=True),
+    ]
+    if query_params:
+        lines.append("Query params: %s" % json.dumps(query_params, sort_keys=True))
+    if req_body is not None:
+        lines.append("Request body: %s" % json.dumps(req_body, sort_keys=True, default=str))
+    lines.append("--------------------------------")
+    msg = "\n".join(lines)
+    logger.info(msg)
+    print(msg)
 
 
 def _get_headers():
@@ -55,6 +93,12 @@ def search_tags(q_tag_fuzzy_name: str) -> dict:
     """
     headers = _get_headers()
     params = {"q_tag_fuzzy_name": (q_tag_fuzzy_name or "").strip() or ""}
+    _log_apollo_request(
+        APOLLO_TAGS_SEARCH_URL,
+        headers,
+        query_params=params,
+        req_body={},
+    )
     r = requests.post(
         APOLLO_TAGS_SEARCH_URL,
         json={},
@@ -69,9 +113,8 @@ def search_tags(q_tag_fuzzy_name: str) -> dict:
 def search_companies(payload: dict) -> dict:
     """Search for companies using Apollo API. Consumes Apollo credits."""
     headers = _get_headers()
-    print(f"Apollo company search payload: {payload}")
+    _log_apollo_request(APOLLO_COMPANY_SEARCH_URL, headers, req_body=payload)
     r = _post_with_retry(APOLLO_COMPANY_SEARCH_URL, payload, headers)
-    # print(f"Apollo company search response: {r.json()}")
     if r.status_code == 422:
         try:
             err_body = r.json()
@@ -87,6 +130,7 @@ def search_companies(payload: dict) -> dict:
 def search_people(payload: dict) -> dict:
     """Search for people/contacts using Apollo API. Consumes Apollo credits."""
     headers = _get_headers()
+    _log_apollo_request(APOLLO_PEOPLE_SEARCH_URL, headers, req_body=payload)
     r = _post_with_retry(APOLLO_PEOPLE_SEARCH_URL, payload, headers)
     r.raise_for_status()
     return r.json()
@@ -115,6 +159,12 @@ def enrich_people_bulk(
             "reveal_phone_number": str(reveal_phone_number).lower(),
         }
         headers = _get_headers()
+        _log_apollo_request(
+            APOLLO_PEOPLE_BULK_ENRICH_URL,
+            headers,
+            query_params=params,
+            req_body=payload,
+        )
         try:
             r = requests.post(
                 APOLLO_PEOPLE_BULK_ENRICH_URL,
