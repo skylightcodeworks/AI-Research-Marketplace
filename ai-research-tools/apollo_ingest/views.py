@@ -16,6 +16,24 @@ from .companies_form import CompanySearchForm
 from .apollo_service import search_companies, search_people, search_tags, enrich_people_bulk
 
 logger = logging.getLogger(__name__)
+
+# Apollo credits (estimated) – logged per API request
+CREDITS_COMPANY_SEARCH = 1
+CREDITS_PEOPLE_SEARCH = 1
+CREDITS_TAGS_SEARCH = 0
+CREDITS_ENRICH_PER_PERSON = 1  # bulk_match: ~1 credit per contact
+
+
+def log_apollo_credits(endpoint_label: str, credits: int, detail: str = ""):
+    """Log Apollo credits consumed for this API request (estimated)."""
+    msg = f"====== {endpoint_label}  Credits: {credits} ======"
+    if detail:
+        msg += f"  ({detail})"
+    logger.info(msg)
+    # Also print so it shows in runserver console
+    print(msg)
+
+
 from .serializers import (
     CompanySearchSerializer,
     CompanySearchResponseSerializer,
@@ -321,6 +339,7 @@ def company_search_view(request):
                 companies = normalize_companies(raw_list)
                 pagination = response.get("pagination", {})
                 total_count = pagination.get("total_entries", len(companies))
+                log_apollo_credits("POST / (company search)", CREDITS_COMPANY_SEARCH)
             except Exception as e:
                 error = str(e)
 
@@ -362,6 +381,10 @@ class CompanySearchAPIView(APIView):
             companies = normalize_companies(raw_list)
             pagination = response.get("pagination", {})
             total_count = pagination.get("total_entries", len(companies))
+            log_apollo_credits(
+                request.path or "/api/companies/search/",
+                CREDITS_COMPANY_SEARCH,
+            )
 
             return Response(
                 {
@@ -406,6 +429,10 @@ class TagsSearchAPIView(APIView):
             )
         try:
             data = search_tags(q)
+            log_apollo_credits(
+                request.path or "/api/tags/search/",
+                CREDITS_TAGS_SEARCH,
+            )
             return Response({"tags": data.get("tags", [])})
         except Exception as e:
             return Response(
@@ -421,6 +448,10 @@ class TagsSearchAPIView(APIView):
             )
         try:
             data = search_tags(q)
+            log_apollo_credits(
+                request.path or "/api/tags/search/",
+                CREDITS_TAGS_SEARCH,
+            )
             return Response({"tags": data.get("tags", [])})
         except Exception as e:
             return Response(
@@ -461,9 +492,17 @@ class PeopleSearchAPIView(APIView):
 
             # Enrich each person to get email, linkedin_url, etc. (consumes credits)
             ids = [p["id"] for p in people if p.get("id")]
+            enrich_credits = 0
             if ids:
                 enriched_by_id = enrich_people_bulk(ids)
                 _merge_enriched_into_people(people, enriched_by_id)
+                enrich_credits = len(ids) * CREDITS_ENRICH_PER_PERSON
+            total_credits = CREDITS_PEOPLE_SEARCH + enrich_credits
+            log_apollo_credits(
+                request.path or "/api/people/search/",
+                total_credits,
+                detail=f"search=1 enrich={enrich_credits} ({len(ids)} contacts)",
+            )
 
             return Response(
                 {
@@ -529,6 +568,7 @@ def get_people_for_company(
         "seniorities": seniorities or [],
     }
     people = []
+    search_calls = 1
     try:
         response = search_people(build_people_payload(payload))
         people = normalize_people(response.get("people", []))
@@ -543,6 +583,7 @@ def get_people_for_company(
             }
             response2 = search_people(build_people_payload(payload_no_filter))
             people = normalize_people(response2.get("people", []))
+            search_calls = 2
     except Exception as e:
         logger.exception(
             "get_people_for_company failed for org_id=%s domain=%s: %s",
@@ -556,6 +597,14 @@ def get_people_for_company(
         if ids:
             enriched_by_id = enrich_people_bulk(ids)
             _merge_enriched_into_people(people, enriched_by_id)
+            enrich_credits = len(ids) * CREDITS_ENRICH_PER_PERSON
+            search_credits = search_calls * CREDITS_PEOPLE_SEARCH
+            total_credits = search_credits + enrich_credits
+            log_apollo_credits(
+                "get_people_for_company (org_id=%s)" % (organization_id or domain or "?"),
+                total_credits,
+                detail=f"search={search_calls} enrich={enrich_credits} ({len(ids)} contacts)",
+            )
     return people
 
 
@@ -586,6 +635,11 @@ def export_companies_view(request):
             {"error": "No companies selected"}, status=status.HTTP_400_BAD_REQUEST
         )
     # Export: use people[] from request if present (frontend called people/search per company); else fetch server-side
+    log_apollo_credits(
+        request.path or "/api/export/companies/",
+        0,
+        detail="per-company credits logged below when people are fetched",
+    )
     logger.info("Export: request for %s company(ies)", len(companies))
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:

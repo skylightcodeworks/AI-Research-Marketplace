@@ -51,6 +51,7 @@ def search_tags(q_tag_fuzzy_name: str) -> dict:
     """
     Search Apollo tags (e.g. industry tags). Undocumented endpoint; use to get tag IDs
     for filter_expression (e.g. industry_tags). Returns response with tags[].
+    May consume credits depending on plan; primary credit use is search + bulk_match.
     """
     headers = _get_headers()
     params = {"q_tag_fuzzy_name": (q_tag_fuzzy_name or "").strip() or ""}
@@ -66,11 +67,11 @@ def search_tags(q_tag_fuzzy_name: str) -> dict:
 
 
 def search_companies(payload: dict) -> dict:
-    """Search for companies using Apollo API."""
+    """Search for companies using Apollo API. Consumes Apollo credits."""
     headers = _get_headers()
     print(f"Apollo company search payload: {payload}")
     r = _post_with_retry(APOLLO_COMPANY_SEARCH_URL, payload, headers)
-    print(f"Apollo company search response: {r.json()}")
+    # print(f"Apollo company search response: {r.json()}")
     if r.status_code == 422:
         try:
             err_body = r.json()
@@ -84,7 +85,7 @@ def search_companies(payload: dict) -> dict:
 
 
 def search_people(payload: dict) -> dict:
-    """Search for people/contacts using Apollo API."""
+    """Search for people/contacts using Apollo API. Consumes Apollo credits."""
     headers = _get_headers()
     r = _post_with_retry(APOLLO_PEOPLE_SEARCH_URL, payload, headers)
     r.raise_for_status()
