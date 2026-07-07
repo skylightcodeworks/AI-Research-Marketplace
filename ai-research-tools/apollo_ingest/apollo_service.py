@@ -10,6 +10,8 @@ APOLLO_COMPANY_SEARCH_URL = "https://api.apollo.io/api/v1/mixed_companies/search
 # mixed_people/search is deprecated and can return 422; api_search is the supported endpoint.
 APOLLO_PEOPLE_SEARCH_URL = "https://api.apollo.io/api/v1/mixed_people/api_search"
 APOLLO_PEOPLE_BULK_ENRICH_URL = "https://api.apollo.io/api/v1/people/bulk_match"
+APOLLO_ORG_ENRICH_URL = "https://api.apollo.io/api/v1/organizations/enrich"
+APOLLO_ORG_GET_URL = "https://api.apollo.io/api/v1/organizations/{organization_id}"
 # Undocumented: used to fetch industry/tag IDs for filters (e.g. industry_tags).
 APOLLO_TAGS_SEARCH_URL = "https://app.apollo.io/api/v1/tags/search"
 
@@ -76,6 +78,13 @@ def _log_apollo_response(endpoint: str, data: dict, extra: Optional[dict] = None
         tags = data.get("tags") or []
         lines.append("Endpoint: tags/search")
         lines.append("Tags count: %s" % len(tags))
+    elif "organizations/enrich" in endpoint or "/organizations/" in endpoint:
+        orgs = data.get("organizations") or []
+        org = data.get("organization") or (orgs[0] if orgs else {})
+        tech_count = len(org.get("current_technologies") or org.get("technology_names") or [])
+        lines.append("Endpoint: organization enrich/get")
+        lines.append("Organization: %s" % (org.get("name") or org.get("id") or "?"))
+        lines.append("Technologies count: %s" % tech_count)
     else:
         lines.append("Endpoint: %s" % endpoint)
         lines.append("Response keys: %s" % list(data.keys())[:10])
@@ -146,6 +155,65 @@ def search_tags(q_tag_fuzzy_name: str) -> dict:
     data = r.json()
     _log_apollo_response(APOLLO_TAGS_SEARCH_URL, data)
     return data
+
+
+def _get_with_retry(
+    url: str, params: dict, headers: dict, timeout: int = DEFAULT_TIMEOUT
+) -> requests.Response:
+    """GET with retries on read/connect timeout."""
+    last_error = None
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            r = requests.get(url, params=params, headers=headers, timeout=timeout)
+            return r
+        except (
+            requests.exceptions.ReadTimeout,
+            requests.exceptions.ConnectTimeout,
+        ) as e:
+            last_error = e
+            if attempt < MAX_RETRIES:
+                time.sleep(2)
+            else:
+                raise last_error
+    raise last_error
+
+
+def enrich_organization(domain: str = None, name: str = None) -> dict:
+    """Enrich one organization by domain and/or name. Returns organization dict."""
+    headers = _get_headers()
+    params = {}
+    if domain and str(domain).strip():
+        params["domain"] = str(domain).strip()
+    if name and str(name).strip():
+        params["name"] = str(name).strip()
+    if not params:
+        return {}
+    _log_apollo_request(APOLLO_ORG_ENRICH_URL, headers, query_params=params)
+    r = _get_with_retry(APOLLO_ORG_ENRICH_URL, params, headers, timeout=30)
+    r.raise_for_status()
+    data = r.json()
+    org = data.get("organization") or {}
+    _log_apollo_response(
+        APOLLO_ORG_ENRICH_URL,
+        {"organization": org, "organizations": [org] if org else []},
+    )
+    return org
+
+
+def get_organization(organization_id: str) -> dict:
+    """Get complete organization info by Apollo organization ID."""
+    org_id = str(organization_id or "").strip()
+    if not org_id:
+        return {}
+    url = APOLLO_ORG_GET_URL.format(organization_id=org_id)
+    headers = _get_headers()
+    _log_apollo_request(url, headers)
+    r = _get_with_retry(url, {}, headers, timeout=30)
+    r.raise_for_status()
+    data = r.json()
+    org = data.get("organization") or {}
+    _log_apollo_response(url, {"organization": org, "organizations": [org] if org else []})
+    return org
 
 
 def search_companies(payload: dict) -> dict:

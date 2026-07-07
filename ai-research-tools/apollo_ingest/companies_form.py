@@ -1,5 +1,17 @@
 from django import forms
 
+from .apollo_defaults import (
+    DEFAULT_EMPLOYEE_RANGES,
+    DEFAULT_FUNDING_STAGES,
+    DEFAULT_INDUSTRY_EXCLUDE_IDS,
+    DEFAULT_INDUSTRY_IDS,
+    DEFAULT_JOB_TITLES,
+    DEFAULT_LOCATIONS_INCLUDED,
+    DEFAULT_ORG_JOB_TITLES,
+    DEFAULT_ORGANIZATION_KEYWORD_EXCLUDE,
+    DEFAULT_ORGANIZATION_KEYWORDS,
+    DEFAULT_SENIORITIES,
+)
 
 # Apollo industry tags: (value=id, name=display). API filters[] options use these IDs.
 INDUSTRIES_LIST = [
@@ -135,28 +147,11 @@ SENIORITY_CHOICES = [
     ("intern", "Intern"),
 ]
 
-# Job title values from Apollo person_title tags – sent as person_titles[] to mixed_people api_search
-JOB_TITLE_CHOICES = [
+# Job title values for people search (person_titles[])
+JOB_TITLE_CHOICES = [(t.lower(), t) for t in DEFAULT_JOB_TITLES] + [
     ("manager", "Manager"),
-    ("project manager", "Project Manager"),
-    ("teacher", "Teacher"),
-    ("owner", "Owner"),
-    ("student", "Student"),
     ("director", "Director"),
     ("software engineer", "Software Engineer"),
-    ("consultant", "Consultant"),
-    ("account manager", "Account Manager"),
-    ("engineer", "Engineer"),
-    ("professor", "Professor"),
-    ("sales manager", "Sales Manager"),
-    ("sales", "Sales"),
-    ("partner", "Partner"),
-    ("associate", "Associate"),
-    ("president", "President"),
-    ("administrative assistant", "Administrative Assistant"),
-    ("supervisor", "Supervisor"),
-    ("general manager", "General Manager"),
-    ("realtor", "Realtor"),
 ]
 
 
@@ -183,8 +178,14 @@ class CompanySearchForm(forms.Form):
     locations_included = forms.CharField(
         required=False,
         label="Locations (Include)",
+        initial=DEFAULT_LOCATIONS_INCLUDED,
         widget=forms.TextInput(
-            attrs={"placeholder": "e.g., United States, Germany, London"}
+            attrs={
+                "placeholder": "e.g., United States, Canada, Saudi Arabia, EMEA",
+                "autocomplete": "off",
+                "data-lpignore": "true",
+                "data-form-type": "other",
+            }
         ),
     )
 
@@ -195,7 +196,17 @@ class CompanySearchForm(forms.Form):
         widget=forms.TextInput(attrs={"placeholder": "e.g., China, Russia"}),
     )
 
-    # Employee range - min
+    # Employee ranges (comma-separated "min,max" e.g. 1,10, 11,50, 51,100)
+    employee_ranges = forms.CharField(
+        required=False,
+        label="Employee ranges",
+        initial="; ".join(DEFAULT_EMPLOYEE_RANGES),
+        widget=forms.TextInput(
+            attrs={"placeholder": "e.g., 1,10; 11,50; 51,100"}
+        ),
+    )
+
+    # Employee range - min (optional override)
     employees_min = forms.IntegerField(
         required=False,
         label="Employees Min",
@@ -215,6 +226,7 @@ class CompanySearchForm(forms.Form):
         required=False,
         choices=INDUSTRIES_LIST,
         label="Industries (include)",
+        initial=DEFAULT_INDUSTRY_IDS,
         widget=forms.SelectMultiple(attrs={"size": "5"}),
     )
 
@@ -223,13 +235,15 @@ class CompanySearchForm(forms.Form):
         required=False,
         choices=INDUSTRIES_LIST,
         label="Industries (exclude)",
+        initial=DEFAULT_INDUSTRY_EXCLUDE_IDS,
         widget=forms.SelectMultiple(attrs={"size": "3"}),
     )
 
-    # Organization job titles (company search filter)
+    # Organization job titles (company search – hiring signal)
     organization_job_titles = forms.CharField(
         required=False,
         label="Org job titles",
+        initial=", ".join(DEFAULT_ORG_JOB_TITLES),
         widget=forms.TextInput(
             attrs={"placeholder": "e.g., software, engineer (comma-separated)"}
         ),
@@ -272,8 +286,25 @@ class CompanySearchForm(forms.Form):
     organization_keyword = forms.CharField(
         required=False,
         label="Organization Keyword",
+        initial=", ".join(DEFAULT_ORGANIZATION_KEYWORDS),
         widget=forms.TextInput(
             attrs={"placeholder": "e.g., caster, software (comma-separated)"}
+        ),
+    )
+
+    organization_keyword_exclude = forms.CharField(
+        required=False,
+        label="Organization Keyword (exclude)",
+        initial=", ".join(DEFAULT_ORGANIZATION_KEYWORD_EXCLUDE),
+        widget=forms.TextInput(attrs={"placeholder": "e.g., Management Consulting"}),
+    )
+
+    funding_stages = forms.CharField(
+        required=False,
+        label="Funding stages",
+        initial=", ".join(DEFAULT_FUNDING_STAGES),
+        widget=forms.TextInput(
+            attrs={"placeholder": "Pre-seed, Seed, Series A, Series B"}
         ),
     )
 
@@ -298,6 +329,7 @@ class CompanySearchForm(forms.Form):
         required=False,
         choices=JOB_TITLE_CHOICES,
         label="Job Titles",
+        initial=[t.lower() for t in DEFAULT_JOB_TITLES],
         widget=forms.SelectMultiple(attrs={"size": "5"}),
     )
 
@@ -306,5 +338,6 @@ class CompanySearchForm(forms.Form):
         required=False,
         choices=SENIORITY_CHOICES,
         label="Seniorities",
+        initial=DEFAULT_SENIORITIES,
         widget=forms.SelectMultiple(attrs={"size": "5"}),
     )

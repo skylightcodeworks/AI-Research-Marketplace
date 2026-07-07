@@ -346,8 +346,9 @@
         <div class="container">
             <!-- Filters Card -->
             <div class="search-card">
-                <form method="POST" id="searchForm">
+                <form method="POST" id="searchForm" autocomplete="off">
                     {% csrf_token %}
+                    {{ form_defaults|json_script:"form-defaults-data" }}
                     
                     <!-- Row 1: Name, Domains -->
                     <div class="row g-4 mb-4">
@@ -375,15 +376,12 @@
                         </div>
                     </div>
                     
-                    <!-- Row 3: Employee Range, Revenue Range -->
+                    <!-- Row 3: Employee ranges, Revenue Range -->
                     <div class="row g-4 mb-4">
                         <div class="col-md-6">
-                            <label class="form-label">Employee Range</label>
-                            <div class="range-group">
-                                {{ form.employees_min }}
-                                <span class="range-separator">to</span>
-                                {{ form.employees_max }}
-                            </div>
+                            <label class="form-label">{{ form.employee_ranges.label }}</label>
+                            {{ form.employee_ranges }}
+                            <small class="text-muted">Semicolon-separated (e.g., 1,10; 11,50; 51,100). Excludes 500+.</small>
                         </div>
                         <div class="col-md-6">
                             <label class="form-label">Revenue Range (in Millions $)</label>
@@ -395,16 +393,31 @@
                         </div>
                     </div>
                     
-                    <!-- Row 4: Organization Keyword -->
+                    <!-- Row 4: Keywords & funding -->
                     <div class="row g-4 mb-4">
-                        <div class="col-12">
+                        <div class="col-md-6">
                             <label class="form-label">{{ form.organization_keyword.label }}</label>
                             {{ form.organization_keyword }}
-                            <small class="text-muted">Comma-separated (e.g., caster, software)</small>
+                            <small class="text-muted">Include keywords (e.g., Artificial Intelligence)</small>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">{{ form.organization_keyword_exclude.label }}</label>
+                            {{ form.organization_keyword_exclude }}
+                        </div>
+                    </div>
+                    <div class="row g-4 mb-4">
+                        <div class="col-md-6">
+                            <label class="form-label">{{ form.funding_stages.label }}</label>
+                            {{ form.funding_stages }}
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">{{ form.organization_job_titles.label }}</label>
+                            {{ form.organization_job_titles }}
+                            <small class="text-muted">Hiring signal – active job postings (e.g., Engineering, Product)</small>
                         </div>
                     </div>
                     
-                    <!-- Row 5: Industries -->
+                    <!-- Row 5: Industries (duplicate org keyword row removed) -->
                     <div class="row g-4 mb-4">
                         <div class="col-md-6">
                             <label class="form-label">{{ form.industries.label }}</label>
@@ -464,7 +477,7 @@
                         <button type="submit" class="btn btn-search">
                             Search Companies
                         </button>
-                        <a href="{% url 'company_search' %}" class="btn btn-clear">
+                        <a href="{% url 'company_search' %}?clear=1" class="btn btn-clear">
                             Clear All
                         </a>
                     </div>
@@ -480,8 +493,8 @@
                             <h5 class="mb-0">Search Results</h5>
                             <span class="badge bg-light text-dark px-3 py-2">{{ total_count }} companies found</span>
                         </div>
-                        <button type="button" class="btn btn-export" id="exportSelectedBtn" title="Select companies below, then click to download Excel files in a ZIP">
-                            Export selected as Excel (ZIP)
+                        <button type="button" class="btn btn-export" id="exportSelectedBtn" title="Download ZIP with contacts Excel + technologies Excel">
+                            Export selected (Contacts + Technologies ZIP)
                         </button>
                     </div>
                     
@@ -507,11 +520,15 @@
                                 <tr class="clickable-row" 
                                     data-company-id="{{ company.id }}" 
                                     data-company-name="{{ company.name }}"
-                                    data-company-domain="{{ company.primary_domain|default:'' }}">
+                                    data-company-domain="{{ company.primary_domain|default:'' }}"
+                                    data-company-country="{{ company.country|default:'' }}"
+                                    data-company-city="{{ company.city|default:'' }}">
                                     <td class="col-checkbox" onclick="event.stopPropagation();">
                                         <input type="checkbox" class="company-checkbox" value="{{ company.id }}" 
                                             data-company-name="{{ company.name }}" 
-                                            data-company-domain="{{ company.primary_domain|default:'' }}">
+                                            data-company-domain="{{ company.primary_domain|default:'' }}"
+                                            data-company-country="{{ company.country|default:'' }}"
+                                            data-company-city="{{ company.city|default:'' }}">
                                     </td>
                                     <td>
                                         <div class="d-flex align-items-center gap-3">
@@ -661,7 +678,33 @@
             el.classList.add('form-select');
         });
         
-        // Initialize Select2 for multi-select
+        // Initialize Select2 for multi-select, then enforce server defaults (beats browser autofill)
+        function applyFormDefaults() {
+            var dataEl = document.getElementById('form-defaults-data');
+            if (!dataEl) return;
+            var defaults = JSON.parse(dataEl.textContent);
+            var textFields = {
+                locations_included: defaults.locations_included,
+                employee_ranges: defaults.employee_ranges,
+                organization_keyword: defaults.organization_keyword,
+                organization_keyword_exclude: defaults.organization_keyword_exclude,
+                funding_stages: defaults.funding_stages,
+                organization_job_titles: defaults.organization_job_titles,
+            };
+            Object.keys(textFields).forEach(function(name) {
+                var input = document.querySelector('[name="' + name + '"]');
+                if (input && textFields[name] != null) input.value = textFields[name];
+            });
+            function setMulti(name, values) {
+                var $sel = $('select[name="' + name + '"]');
+                if ($sel.length && values) $sel.val(values).trigger('change');
+            }
+            setMulti('industries', defaults.industries);
+            setMulti('industries_exclude', defaults.industries_exclude);
+            setMulti('job_titles', defaults.job_titles);
+            setMulti('seniorities', defaults.seniorities);
+        }
+
         $(document).ready(function() {
             $('select[multiple]').select2({
                 theme: 'bootstrap-5',
@@ -669,6 +712,10 @@
                 allowClear: true,
                 width: '100%'
             });
+            applyFormDefaults();
+        });
+        window.addEventListener('pageshow', function() {
+            applyFormDefaults();
         });
         
         // Show loading spinner on form submit
@@ -905,7 +952,9 @@
             const companies = Array.from(checked).map(cb => ({
                 id: cb.value,
                 name: cb.dataset.companyName || cb.value,
-                domain: cb.dataset.companyDomain || ''
+                domain: cb.dataset.companyDomain || '',
+                country: cb.dataset.companyCountry || '',
+                city: cb.dataset.companyCity || ''
             }));
             const filters = getSelectedFilters();
             const csrfEl = document.querySelector('[name=csrfmiddlewaretoken]');
@@ -933,11 +982,11 @@
                     })
                     .then(function(people) {
                         console.log('Export: got', people.length, 'people for', c.name);
-                        return { id: c.id, name: c.name, domain: c.domain, people: people };
+                        return { id: c.id, name: c.name, domain: c.domain, country: c.country, city: c.city, people: people };
                     })
                     .catch(function(err) {
                         console.error('Export: people fetch failed for', c.name, err);
-                        return { id: c.id, name: c.name, domain: c.domain, people: [] };
+                        return { id: c.id, name: c.name, domain: c.domain, country: c.country, city: c.city, people: [] };
                     });
             }
             Promise.all(companies.map(fetchOne))

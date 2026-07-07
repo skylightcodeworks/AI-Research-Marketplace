@@ -1,9 +1,10 @@
 import io
 import logging
-import re
+import os
 import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from django.http import HttpResponse
-from django.shortcuts import render
+from django.shortcuts import redirect, render
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_http_methods
 from openpyxl import Workbook
@@ -13,7 +14,25 @@ from rest_framework import status
 from drf_spectacular.utils import extend_schema
 
 from .companies_form import CompanySearchForm
-from .apollo_service import search_companies, search_people, search_tags, enrich_people_bulk
+from .apollo_defaults import (
+    DEFAULT_EMPLOYEE_RANGES,
+    DEFAULT_FUNDING_STAGES,
+    DEFAULT_INDUSTRY_EXCLUDE_IDS,
+    DEFAULT_INDUSTRY_IDS,
+    DEFAULT_LOCATIONS_INCLUDED,
+    DEFAULT_ORG_JOB_TITLES,
+    DEFAULT_ORGANIZATION_KEYWORD_EXCLUDE,
+    DEFAULT_ORGANIZATION_KEYWORDS,
+    default_form_initial,
+)
+from .apollo_service import (
+    search_companies,
+    search_people,
+    search_tags,
+    enrich_people_bulk,
+    enrich_organization,
+    get_organization,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +41,9 @@ CREDITS_COMPANY_SEARCH = 1
 CREDITS_PEOPLE_SEARCH = 1
 CREDITS_TAGS_SEARCH = 0
 CREDITS_ENRICH_PER_PERSON = 1  # bulk_match: ~1 credit per contact
+CREDITS_ORG_ENRICH = 1  # organization enrich/get: ~1 credit per company
+# Parallel Apollo calls during export (I/O-bound). Keep modest to avoid rate limits.
+EXPORT_MAX_WORKERS = max(1, int(os.getenv("EXPORT_MAX_WORKERS", "8")))
 
 
 def log_apollo_credits(endpoint_label: str, credits: int, detail: str = ""):
@@ -84,6 +106,28 @@ def normalize_companies(accounts: list) -> list:
     return companies
 
 
+def merge_search_defaults(data: dict) -> dict:
+    """Apply ICP default filters when form fields are empty (e.g. not in HTML)."""
+    merged = dict(data)
+    if not merged.get("employee_ranges") and merged.get("employees_min") is None and merged.get("employees_max") is None:
+        merged["employee_ranges"] = "; ".join(DEFAULT_EMPLOYEE_RANGES)
+    if not merged.get("industries"):
+        merged["industries"] = list(DEFAULT_INDUSTRY_IDS)
+    if not merged.get("industries_exclude"):
+        merged["industries_exclude"] = list(DEFAULT_INDUSTRY_EXCLUDE_IDS)
+    if not (merged.get("organization_keyword") or "").strip():
+        merged["organization_keyword"] = ", ".join(DEFAULT_ORGANIZATION_KEYWORDS)
+    if not (merged.get("organization_keyword_exclude") or "").strip():
+        merged["organization_keyword_exclude"] = ", ".join(DEFAULT_ORGANIZATION_KEYWORD_EXCLUDE)
+    if not (merged.get("funding_stages") or "").strip():
+        merged["funding_stages"] = ", ".join(DEFAULT_FUNDING_STAGES)
+    if not (merged.get("organization_job_titles") or "").strip():
+        merged["organization_job_titles"] = ", ".join(DEFAULT_ORG_JOB_TITLES)
+    if not (merged.get("locations_included") or "").strip():
+        merged["locations_included"] = DEFAULT_LOCATIONS_INCLUDED
+    return merged
+
+
 def build_apollo_payload(data: dict) -> dict:
     """
     Build Apollo mixed_companies/search payload (organization search only).
@@ -142,12 +186,23 @@ def build_apollo_payload(data: dict) -> dict:
             payload["organization_not_locations"] = loc_list
 
     # Employee range → organization_num_employees_ranges (list of "min,max")
+    employee_ranges = data.get("employee_ranges")
     emp_min = data.get("employees_min")
     emp_max = data.get("employees_max")
-    if emp_min is not None or emp_max is not None:
+    if employee_ranges:
+        if isinstance(employee_ranges, str):
+            ranges = [x.strip() for x in employee_ranges.split(";") if x.strip()]
+            if ranges:
+                payload["organization_num_employees_ranges"] = ranges
+        elif isinstance(employee_ranges, list):
+            payload["organization_num_employees_ranges"] = employee_ranges
+    elif emp_min is not None or emp_max is not None:
         min_val = emp_min if emp_min is not None else 1
         max_val = emp_max if emp_max is not None else 1000000
         payload["organization_num_employees_ranges"] = [f"{min_val},{max_val}"]
+    else:
+        from .apollo_defaults import DEFAULT_EMPLOYEE_RANGES
+        payload["organization_num_employees_ranges"] = list(DEFAULT_EMPLOYEE_RANGES)
 
     # Revenue range → revenue_range { min, max } (values in millions as per form)
     rev_min = data.get("revenue_min")
@@ -166,6 +221,26 @@ def build_apollo_payload(data: dict) -> dict:
             tag_list = [str(t).strip() for t in keyword_tags if str(t).strip()]
         if tag_list:
             payload["q_organization_keyword_tags"] = tag_list
+
+    # Organization keyword exclude (if supported by Apollo)
+    keyword_exclude = data.get("organization_keyword_exclude")
+    if keyword_exclude:
+        if isinstance(keyword_exclude, str):
+            ex_list = [t.strip() for t in keyword_exclude.split(",") if t.strip()]
+        else:
+            ex_list = [str(t).strip() for t in keyword_exclude if str(t).strip()]
+        if ex_list:
+            payload["q_not_organization_keyword_tags"] = ex_list
+
+    # Funding stages
+    funding_stages = data.get("funding_stages")
+    if funding_stages:
+        if isinstance(funding_stages, str):
+            stages = [s.strip() for s in funding_stages.split(",") if s.strip()]
+        else:
+            stages = [str(s).strip() for s in funding_stages if str(s).strip()]
+        if stages:
+            payload["organization_latest_funding_stage_cd"] = stages
 
     # Organization job titles (company search filter)
     org_job_titles = data.get("q_organization_job_titles") or data.get(
@@ -317,22 +392,33 @@ def company_search_view(request):
     """
     View for searching companies via Apollo API.
     Shows filters form and results table.
+    Uses post-redirect-get so refresh always shows default filters.
     """
-    form = CompanySearchForm()
+    form = CompanySearchForm(initial=default_form_initial())
     companies = None
     total_count = 0
-    error = None
+    error = request.session.pop("company_search_error", None)
+
+    if request.GET.get("clear"):
+        request.session.pop("company_search_results", None)
+        request.session.modified = True
+        return redirect("company_search")
+
+    stored = request.session.get("company_search_results")
+    if stored:
+        companies = stored.get("companies")
+        total_count = stored.get("total_count", 0)
 
     if request.method == "POST":
-        form = CompanySearchForm(request.POST)
-        if form.is_valid():
+        post_form = CompanySearchForm(request.POST)
+        if post_form.is_valid():
             try:
-                data = form.cleaned_data
+                data = post_form.cleaned_data
                 data.setdefault("page", 1)
                 data.setdefault("per_page", 25)
+                data = merge_search_defaults(data)
                 payload = build_apollo_payload(data)
                 response = search_companies(payload)
-                # Prefer organizations array; fallback to accounts
                 organizations = response.get("organizations") or []
                 accounts = response.get("accounts") or []
                 raw_list = organizations if organizations else accounts
@@ -340,14 +426,26 @@ def company_search_view(request):
                 pagination = response.get("pagination", {})
                 total_count = pagination.get("total_entries", len(companies))
                 log_apollo_credits("POST / (company search)", CREDITS_COMPANY_SEARCH)
+                request.session["company_search_results"] = {
+                    "companies": companies,
+                    "total_count": total_count,
+                }
+                request.session.modified = True
+                return redirect("company_search")
             except Exception as e:
-                error = str(e)
+                request.session["company_search_error"] = str(e)
+                request.session.modified = True
+                return redirect("company_search")
+        request.session["company_search_error"] = "Please fix the form errors and try again."
+        request.session.modified = True
+        return redirect("company_search")
 
     return render(
         request,
         "apollo_ingest/company_search.html",
         {
             "form": form,
+            "form_defaults": default_form_initial(),
             "companies": companies,
             "total_count": total_count,
             "error": error,
@@ -373,6 +471,7 @@ class CompanySearchAPIView(APIView):
             data = dict(serializer.validated_data)
             data.setdefault("page", 1)
             data.setdefault("per_page", 25)
+            data = merge_search_defaults(data)
             payload = build_apollo_payload(data)
             response = search_companies(payload)
             organizations = response.get("organizations") or []
@@ -608,18 +707,153 @@ def get_people_for_company(
     return people
 
 
-def _sanitize_filename(name: str, max_len: int = 200) -> str:
-    """Remove chars invalid for filenames; truncate."""
-    s = re.sub(r'[<>:"/\\|?*]', "", str(name).strip())
-    return (s[:max_len] + "...") if len(s) > max_len else (s or "company")
+def _format_person_location(p: dict) -> str:
+    return (
+        ", ".join(filter(None, [p.get("city"), p.get("state"), p.get("country")]))
+        or ""
+    )
+
+
+def _company_country_display(c: dict) -> str:
+    country = (c.get("country") or "").strip()
+    if country:
+        return country
+    city = (c.get("city") or "").strip()
+    state = (c.get("state") or "").strip()
+    return ", ".join(x for x in [city, state] if x)
+
+
+def _format_organization_technologies(org: dict) -> str:
+    """Format Apollo current_technologies / technology_names for Excel export."""
+    if not org:
+        return ""
+    current = org.get("current_technologies") or []
+    if current:
+        parts = []
+        for tech in current:
+            name = (tech.get("name") or "").strip()
+            category = (tech.get("category") or "").strip()
+            if name and category:
+                parts.append(f"{name} ({category})")
+            elif name:
+                parts.append(name)
+        return ", ".join(parts)
+    names = org.get("technology_names") or []
+    return ", ".join(str(name).strip() for name in names if str(name).strip())
+
+
+def _fetch_company_technologies(
+    organization_id=None, domain=None, name=None
+) -> tuple[str, int]:
+    """Fetch technologies for one company. Returns (formatted string, credits used)."""
+    org = {}
+    credits = 0
+    try:
+        if domain:
+            org = enrich_organization(domain=domain, name=name)
+            credits = CREDITS_ORG_ENRICH if org else 0
+        if not org and organization_id:
+            org = get_organization(str(organization_id))
+            credits = CREDITS_ORG_ENRICH if org else 0
+        elif not org and name:
+            org = enrich_organization(name=name)
+            credits = CREDITS_ORG_ENRICH if org else 0
+    except Exception as e:
+        logger.warning(
+            "Technologies fetch failed for id=%s domain=%s name=%s: %s",
+            organization_id,
+            domain,
+            name,
+            e,
+        )
+    if credits:
+        log_apollo_credits(
+            "organizations/enrich (export technologies)",
+            credits,
+            detail=name or domain or organization_id or "?",
+        )
+    return _format_organization_technologies(org), credits
+
+
+def _fetch_export_company_bundle(
+    company: dict, job_titles: list, seniorities: list
+) -> dict:
+    """Fetch technologies + people for one company (used by parallel export workers)."""
+    cid = company.get("id")
+    cname = company.get("name") or "company"
+    cdomain = (company.get("domain") or company.get("primary_domain") or "").strip()
+    technologies, tech_credits = _fetch_company_technologies(
+        organization_id=cid,
+        domain=cdomain or None,
+        name=cname,
+    )
+    people = company.get("people") if isinstance(company.get("people"), list) else []
+    server_fetched = False
+    if not people:
+        server_fetched = True
+        try:
+            logger.info("Export: fetching people for company id=%s name=%s", cid, cname)
+            people = get_people_for_company(
+                organization_id=cid,
+                domain=cdomain or None,
+                job_titles=job_titles,
+                seniorities=seniorities,
+                per_page=100,
+            )
+        except Exception as e:
+            logger.warning("Export: skip company id=%s name=%s: %s", cid, cname, e)
+            people = []
+    return {
+        "cname": cname,
+        "company_country": _company_country_display(company),
+        "technologies": technologies,
+        "people": people,
+        "tech_credits": tech_credits,
+        "server_fetched": server_fetched,
+    }
+
+
+def _fetch_export_bundles_parallel(
+    companies: list, job_titles: list, seniorities: list
+) -> list[dict]:
+    """Promise.all equivalent in Python: fetch all companies concurrently."""
+    if not companies:
+        return []
+    workers = min(EXPORT_MAX_WORKERS, len(companies))
+    results: list[dict | None] = [None] * len(companies)
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_to_index = {
+            executor.submit(
+                _fetch_export_company_bundle, company, job_titles, seniorities
+            ): index
+            for index, company in enumerate(companies)
+        }
+        for future in as_completed(future_to_index):
+            index = future_to_index[future]
+            try:
+                results[index] = future.result()
+            except Exception as e:
+                company = companies[index]
+                cname = company.get("name") or "company"
+                logger.warning("Export worker failed for %s: %s", cname, e)
+                results[index] = {
+                    "cname": cname,
+                    "company_country": _company_country_display(company),
+                    "technologies": "",
+                    "people": [],
+                    "tech_credits": 0,
+                    "server_fetched": False,
+                }
+    return [bundle for bundle in results if bundle is not None]
 
 
 @require_http_methods(["POST"])
 @ensure_csrf_cookie
 def export_companies_view(request):
     """
-    Export selected companies as one Excel file per company (Name, Email, LinkedIn, Job Title, Seniority, Location),
-    then return all files in a single ZIP download. Uses current job_titles and seniorities from request body.
+    Export selected companies as a ZIP with two Excel files:
+    - companies_contacts.xlsx (all contacts)
+    - companies_technologies.xlsx (company name + technologies per company)
     """
     import json
 
@@ -643,74 +877,76 @@ def export_companies_view(request):
         detail="%s companies with people[] from request, %s will fetch server-side (see below)" % (companies_with_people, fetch_count),
     )
     logger.info(
-        "Export: %s company(ies) | %s with people[] (no extra credits) | %s to fetch server-side (credits = search + enrich per company)",
+        "Export: %s company(ies) | %s with people[] (no extra credits) | %s to fetch server-side | parallel workers=%s",
         len(companies),
         companies_with_people,
         fetch_count,
+        min(EXPORT_MAX_WORKERS, len(companies)),
     )
     zip_buffer = io.BytesIO()
+    wb_contacts = Workbook()
+    ws = wb_contacts.active
+    ws.title = "Contacts"
+    ws.append(
+        [
+            "Company Name",
+            "Company Country",
+            "Name",
+            "Email",
+            "LinkedIn",
+            "Job Title",
+            "Seniority",
+            "Location",
+        ]
+    )
+    wb_technologies = Workbook()
+    ws_tech = wb_technologies.active
+    ws_tech.title = "Technologies"
+    ws_tech.append(["Company Name", "Technologies"])
+    ws_tech.column_dimensions["A"].width = 30
+    ws_tech.column_dimensions["B"].width = 120
+
+    bundles = _fetch_export_bundles_parallel(companies, job_titles, seniorities)
     server_side_fetches = 0
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        for c in companies:
-            cid = c.get("id")
-            cname = c.get("name") or "company"
-            cdomain = (c.get("domain") or c.get("primary_domain") or "").strip()
-            people = c.get("people") if isinstance(c.get("people"), list) else []
-            if not people:
-                server_side_fetches += 1
-                try:
-                    logger.info(
-                        "Export: fetching people for company id=%s name=%s", cid, cname
-                    )
-                    people = get_people_for_company(
-                        organization_id=cid,
-                        domain=cdomain or None,
-                        job_titles=job_titles,
-                        seniorities=seniorities,
-                        per_page=100,
-                    )
-                except Exception as e:
-                    logger.warning(
-                        "Export: skip company id=%s name=%s: %s", cid, cname, e
-                    )
-            wb = Workbook()
-            ws = wb.active
-            ws.title = "Contacts"
+    tech_credits = 0
+    for bundle in bundles:
+        tech_credits += bundle.get("tech_credits") or 0
+        if bundle.get("server_fetched"):
+            server_side_fetches += 1
+        ws_tech.append([bundle["cname"], bundle["technologies"]])
+        for p in bundle.get("people") or []:
             ws.append(
-                ["Name", "Email", "LinkedIn", "Job Title", "Seniority", "Location"]
+                [
+                    bundle["cname"],
+                    bundle["company_country"],
+                    p.get("name") or "",
+                    p.get("email") or "",
+                    p.get("linkedin_url") or "",
+                    p.get("title") or "",
+                    p.get("seniority") or "",
+                    _format_person_location(p),
+                ]
             )
-            for p in people:
-                loc = (
-                    ", ".join(
-                        filter(None, [p.get("city"), p.get("state"), p.get("country")])
-                    )
-                    or ""
-                )
-                ws.append(
-                    [
-                        p.get("name") or "",
-                        p.get("email") or "",
-                        p.get("linkedin_url") or "",
-                        p.get("title") or "",
-                        p.get("seniority") or "",
-                        loc,
-                    ]
-                )
-            xlsx_buffer = io.BytesIO()
-            wb.save(xlsx_buffer)
-            xlsx_buffer.seek(0)
-            safe_name = _sanitize_filename(cname) + ".xlsx"
-            zf.writestr(safe_name, xlsx_buffer.getvalue())
+    contacts_buffer = io.BytesIO()
+    wb_contacts.save(contacts_buffer)
+    contacts_buffer.seek(0)
+    technologies_buffer = io.BytesIO()
+    wb_technologies.save(technologies_buffer)
+    technologies_buffer.seek(0)
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("companies_contacts.xlsx", contacts_buffer.getvalue())
+        zf.writestr("companies_technologies.xlsx", technologies_buffer.getvalue())
     zip_buffer.seek(0)
-    if server_side_fetches > 0:
+    if server_side_fetches > 0 or tech_credits > 0:
         logger.info(
-            "Export done: %s companies total, %s fetched server-side (credits burned above per company: search + enrich)",
+            "Export done: %s companies total, %s fetched server-side (people), %s org enrich credits (technologies)",
             len(companies),
             server_side_fetches,
+            tech_credits,
         )
         print(
-            "====== Export summary: %s companies, %s server-side fetches (credits = lines above) ======"
-            % (len(companies), server_side_fetches)
+            "====== Export summary: %s companies, %s server-side people fetches, %s org enrich credits ======"
+            % (len(companies), server_side_fetches, tech_credits)
         )
     response = HttpResponse(zip_buffer.getvalue(), content_type="application/zip")
     response["Content-Disposition"] = 'attachment; filename="companies_export.zip"'
