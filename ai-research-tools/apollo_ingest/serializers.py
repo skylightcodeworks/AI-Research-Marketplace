@@ -64,6 +64,21 @@ class CompanySearchSerializer(serializers.Serializer):
         allow_blank=True,
         help_text="Comma-separated organization keyword tags (e.g., caster, software)",
     )
+    organization_keyword_exclude = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text="Comma-separated organization keyword tags to exclude",
+    )
+    employee_ranges = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text='Semicolon-separated employee ranges (e.g., "1,10; 11,50")',
+    )
+    funding_stages = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text="Comma-separated funding stages (e.g., Seed, Series A)",
+    )
     job_titles = serializers.ListField(
         child=serializers.CharField(),
         required=False,

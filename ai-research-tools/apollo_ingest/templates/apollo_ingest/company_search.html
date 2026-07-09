@@ -346,7 +346,7 @@
         <div class="container">
             <!-- Filters Card -->
             <div class="search-card">
-                <form method="POST" id="searchForm" autocomplete="off">
+                <form id="searchForm" autocomplete="off">
                     {% csrf_token %}
                     {{ form_defaults|json_script:"form-defaults-data" }}
                     
@@ -484,123 +484,21 @@
                 </form>
             </div>
             
-            <!-- Results Table (Companies) -->
+            <!-- Results Table (Companies) — filled via AJAX after search -->
             <div id="companiesSection">
-                {% if companies is not None %}
-                <div class="results-card">
+                <div id="searchResultsCard" class="results-card" style="display: none;">
                     <div class="results-header d-flex justify-content-between align-items-center flex-wrap gap-2">
                         <div class="d-flex align-items-center gap-3">
                             <h5 class="mb-0">Search Results</h5>
-                            <span class="badge bg-light text-dark px-3 py-2">{{ total_count }} companies found</span>
+                            <span class="badge bg-light text-dark px-3 py-2" id="searchTotalCount">0 companies found</span>
                         </div>
                         <button type="button" class="btn btn-export" id="exportSelectedBtn" title="Download ZIP with contacts Excel + technologies Excel">
                             Export selected (Contacts + Technologies ZIP)
                         </button>
                     </div>
-                    
-                    {% if companies %}
-                    <div class="table-responsive">
-                        <table class="table" id="companiesTable">
-                            <thead>
-                                <tr>
-                                    <th class="col-checkbox">
-                                        <input type="checkbox" id="selectAllCompanies" title="Select all on this page">
-                                    </th>
-                                    <th>Company</th>
-                                    <th>Domain</th>
-                                    <th>Industry</th>
-                                    <th>Employees</th>
-                                    <th>Revenue</th>
-                                    <th>Location</th>
-                                    <th>Contacts</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {% for company in companies %}
-                                <tr class="clickable-row" 
-                                    data-company-id="{{ company.id }}" 
-                                    data-company-name="{{ company.name }}"
-                                    data-company-domain="{{ company.primary_domain|default:'' }}"
-                                    data-company-country="{{ company.country|default:'' }}"
-                                    data-company-city="{{ company.city|default:'' }}">
-                                    <td class="col-checkbox" onclick="event.stopPropagation();">
-                                        <input type="checkbox" class="company-checkbox" value="{{ company.id }}" 
-                                            data-company-name="{{ company.name }}" 
-                                            data-company-domain="{{ company.primary_domain|default:'' }}"
-                                            data-company-country="{{ company.country|default:'' }}"
-                                            data-company-city="{{ company.city|default:'' }}">
-                                    </td>
-                                    <td>
-                                        <div class="d-flex align-items-center gap-3">
-                                            {% if company.logo_url %}
-                                            <img src="{{ company.logo_url }}" alt="" class="company-logo" onerror="this.style.display='none'">
-                                            {% else %}
-                                            <div class="company-logo-placeholder">
-                                                {{ company.name|slice:":1"|upper }}
-                                            </div>
-                                            {% endif %}
-                                            <div>
-                                                <div class="company-name-link">{{ company.name }}</div>
-                                                {% if company.founded_year %}
-                                                <small class="text-muted">Est. {{ company.founded_year }}</small>
-                                                {% endif %}
-                                            </div>
-                                        </div>
-                                    </td>
-                                    <td>
-                                        {% if company.primary_domain %}
-                                        <a href="https://{{ company.primary_domain }}" target="_blank" class="company-domain" onclick="event.stopPropagation();">
-                                            {{ company.primary_domain }}
-                                        </a>
-                                        {% else %}
-                                        <span class="text-muted">-</span>
-                                        {% endif %}
-                                    </td>
-                                    <td>
-                                        {% if company.industry %}
-                                        <span class="badge-industry">{{ company.industry }}</span>
-                                        {% else %}
-                                        <span class="text-muted">-</span>
-                                        {% endif %}
-                                    </td>
-                                    <td>
-                                        {% if company.estimated_num_employees %}
-                                        {{ company.estimated_num_employees|floatformat:0 }}
-                                        {% else %}
-                                        <span class="text-muted">-</span>
-                                        {% endif %}
-                                    </td>
-                                    <td>
-                                        {% if company.annual_revenue_printed %}
-                                        <span class="badge-revenue">{{ company.annual_revenue_printed }}</span>
-                                        {% else %}
-                                        <span class="text-muted">-</span>
-                                        {% endif %}
-                                    </td>
-                                    <td>
-                                        {% if company.city or company.country %}
-                                        {{ company.city }}{% if company.city and company.country %}, {% endif %}{{ company.country }}
-                                        {% else %}
-                                        <span class="text-muted">-</span>
-                                        {% endif %}
-                                    </td>
-                                    <td>
-                                        <span class="view-contacts-icon" title="View Contacts">&#x1F465;</span>
-                                    </td>
-                                </tr>
-                                {% endfor %}
-                            </tbody>
-                        </table>
-                    </div>
-                    {% else %}
-                    <div class="no-results">
-                        <div style="font-size: 3.5rem; margin-bottom: 15px;">&#x1F50D;</div>
-                        <h5>No companies found</h5>
-                        <p class="text-muted">Try adjusting your search filters</p>
-                    </div>
-                    {% endif %}
+                    <div id="companiesTableWrap"></div>
                 </div>
-                {% endif %}
+                <div id="searchErrorAlert" class="alert alert-danger alert-custom mt-4" style="display: none;"></div>
             </div>
 
             <!-- Contacts Section (Hidden by default) -->
@@ -658,11 +556,6 @@
                 </div>
             </div>
 
-            {% if error %}
-            <div class="alert alert-danger alert-custom mt-4">
-                <strong>Error:</strong> {{ error }}
-            </div>
-            {% endif %}
         </div>
     </div>
 
@@ -678,7 +571,7 @@
             el.classList.add('form-select');
         });
         
-        // Initialize Select2 for multi-select, then enforce server defaults (beats browser autofill)
+        // Apply defaults only on fresh page load (F5 / Clear All), not after search
         function applyFormDefaults() {
             var dataEl = document.getElementById('form-defaults-data');
             if (!dataEl) return;
@@ -705,6 +598,182 @@
             setMulti('seniorities', defaults.seniorities);
         }
 
+        function escapeHtml(text) {
+            var div = document.createElement('div');
+            div.textContent = text == null ? '' : String(text);
+            return div.innerHTML;
+        }
+
+        function getSearchPayload() {
+            var form = document.getElementById('searchForm');
+            var fd = new FormData(form);
+            var multiKeys = ['industries', 'industries_exclude', 'job_titles', 'seniorities'];
+            var intKeys = ['employees_min', 'employees_max', 'revenue_min', 'revenue_max', 'page', 'per_page'];
+            var payload = {};
+            multiKeys.forEach(function(key) {
+                var vals = fd.getAll(key).filter(function(v) { return v; });
+                if (vals.length) payload[key] = vals;
+            });
+            fd.forEach(function(value, key) {
+                if (key === 'csrfmiddlewaretoken' || multiKeys.indexOf(key) !== -1) return;
+                if (value === '') return;
+                if (intKeys.indexOf(key) !== -1) {
+                    var n = parseInt(value, 10);
+                    if (!isNaN(n)) payload[key] = n;
+                } else {
+                    payload[key] = value;
+                }
+            });
+            return payload;
+        }
+
+        function renderCompanyRow(company) {
+            var id = escapeHtml(company.id);
+            var name = escapeHtml(company.name);
+            var domain = escapeHtml(company.primary_domain || '');
+            var country = escapeHtml(company.country || '');
+            var city = escapeHtml(company.city || '');
+            var logo = company.logo_url
+                ? '<img src="' + escapeHtml(company.logo_url) + '" alt="" class="company-logo" onerror="this.style.display=\'none\'">'
+                : '<div class="company-logo-placeholder">' + escapeHtml((company.name || '?').charAt(0).toUpperCase()) + '</div>';
+            var founded = company.founded_year
+                ? '<small class="text-muted">Est. ' + escapeHtml(company.founded_year) + '</small>'
+                : '';
+            var domainCell = domain
+                ? '<a href="https://' + domain + '" target="_blank" class="company-domain" onclick="event.stopPropagation();">' + domain + '</a>'
+                : '<span class="text-muted">-</span>';
+            var industryCell = company.industry
+                ? '<span class="badge-industry">' + escapeHtml(company.industry) + '</span>'
+                : '<span class="text-muted">-</span>';
+            var employeesCell = company.estimated_num_employees != null
+                ? escapeHtml(Math.round(company.estimated_num_employees))
+                : '<span class="text-muted">-</span>';
+            var revenueCell = company.annual_revenue_printed
+                ? '<span class="badge-revenue">' + escapeHtml(company.annual_revenue_printed) + '</span>'
+                : '<span class="text-muted">-</span>';
+            var locationParts = [];
+            if (company.city) locationParts.push(escapeHtml(company.city));
+            if (company.country) locationParts.push(escapeHtml(company.country));
+            var locationCell = locationParts.length
+                ? locationParts.join(', ')
+                : '<span class="text-muted">-</span>';
+            return '<tr class="clickable-row"' +
+                ' data-company-id="' + id + '"' +
+                ' data-company-name="' + name + '"' +
+                ' data-company-domain="' + domain + '"' +
+                ' data-company-country="' + country + '"' +
+                ' data-company-city="' + city + '">' +
+                '<td class="col-checkbox" onclick="event.stopPropagation();">' +
+                '<input type="checkbox" class="company-checkbox" value="' + id + '"' +
+                ' data-company-name="' + name + '"' +
+                ' data-company-domain="' + domain + '"' +
+                ' data-company-country="' + country + '"' +
+                ' data-company-city="' + city + '">' +
+                '</td>' +
+                '<td><div class="d-flex align-items-center gap-3">' + logo +
+                '<div><div class="company-name-link">' + name + '</div>' + founded + '</div></div></td>' +
+                '<td>' + domainCell + '</td>' +
+                '<td>' + industryCell + '</td>' +
+                '<td>' + employeesCell + '</td>' +
+                '<td>' + revenueCell + '</td>' +
+                '<td>' + locationCell + '</td>' +
+                '<td><span class="view-contacts-icon" title="View Contacts">&#x1F465;</span></td>' +
+                '</tr>';
+        }
+
+        function renderCompaniesResults(companies, totalCount) {
+            var card = document.getElementById('searchResultsCard');
+            var wrap = document.getElementById('companiesTableWrap');
+            var countEl = document.getElementById('searchTotalCount');
+            var errEl = document.getElementById('searchErrorAlert');
+            if (errEl) errEl.style.display = 'none';
+            if (countEl) countEl.textContent = totalCount + ' companies found';
+            if (!companies || !companies.length) {
+                wrap.innerHTML = '<div class="no-results">' +
+                    '<div style="font-size: 3.5rem; margin-bottom: 15px;">&#x1F50D;</div>' +
+                    '<h5>No companies found</h5>' +
+                    '<p class="text-muted">Try adjusting your search filters</p></div>';
+            } else {
+                var rows = companies.map(renderCompanyRow).join('');
+                wrap.innerHTML = '<div class="table-responsive"><table class="table" id="companiesTable">' +
+                    '<thead><tr>' +
+                    '<th class="col-checkbox"><input type="checkbox" id="selectAllCompanies" title="Select all on this page"></th>' +
+                    '<th>Company</th><th>Domain</th><th>Industry</th><th>Employees</th>' +
+                    '<th>Revenue</th><th>Location</th><th>Contacts</th>' +
+                    '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+            }
+            if (card) card.style.display = 'block';
+            bindCompanyRowClicks();
+            bindSelectAllCompanies();
+        }
+
+        function bindCompanyRowClicks() {
+            document.querySelectorAll('.clickable-row').forEach(function(row) {
+                row.onclick = function() {
+                    loadContacts(
+                        this.dataset.companyId,
+                        this.dataset.companyName,
+                        this.dataset.companyDomain,
+                        1,
+                        null
+                    );
+                };
+            });
+        }
+
+        function bindSelectAllCompanies() {
+            var selectAllEl = document.getElementById('selectAllCompanies');
+            if (!selectAllEl) return;
+            selectAllEl.onchange = function() {
+                document.querySelectorAll('.company-checkbox').forEach(function(cb) {
+                    cb.checked = selectAllEl.checked;
+                });
+            };
+        }
+
+        function runCompanySearch() {
+            var csrfEl = document.querySelector('[name=csrfmiddlewaretoken]');
+            if (!csrfEl || !csrfEl.value) {
+                alert('Missing CSRF token. Refresh the page and try again.');
+                return;
+            }
+            document.body.classList.add('loading');
+            var errEl = document.getElementById('searchErrorAlert');
+            if (errEl) errEl.style.display = 'none';
+            fetch('/api/companies/search/', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': csrfEl.value
+                },
+                body: JSON.stringify(getSearchPayload())
+            })
+            .then(function(r) {
+                return r.json().then(function(data) {
+                    if (!r.ok) throw new Error(data.error || data.detail || r.statusText);
+                    return data;
+                });
+            })
+            .then(function(data) {
+                renderCompaniesResults(data.companies || [], data.total_count || 0);
+                document.getElementById('contactsSection').style.display = 'none';
+                document.getElementById('companiesSection').style.display = 'block';
+                var resultsCard = document.getElementById('searchResultsCard');
+                if (resultsCard) resultsCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            })
+            .catch(function(err) {
+                if (errEl) {
+                    errEl.innerHTML = '<strong>Error:</strong> ' + escapeHtml(err.message || String(err));
+                    errEl.style.display = 'block';
+                } else {
+                    alert('Search failed: ' + (err.message || err));
+                }
+            })
+            .finally(function() {
+                document.body.classList.remove('loading');
+            });
+        }
+
         $(document).ready(function() {
             $('select[multiple]').select2({
                 theme: 'bootstrap-5',
@@ -714,13 +783,10 @@
             });
             applyFormDefaults();
         });
-        window.addEventListener('pageshow', function() {
-            applyFormDefaults();
-        });
-        
-        // Show loading spinner on form submit
-        document.getElementById('searchForm').addEventListener('submit', function() {
-            document.body.classList.add('loading');
+
+        document.getElementById('searchForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            runCompanySearch();
         });
 
         // Get selected job titles and seniorities (same as frontend people – for contacts and export)
@@ -743,17 +809,7 @@
             return { jobTitles: jobTitles || [], seniorities: seniorities || [] };
         }
 
-        // Handle company row click (load contacts page 1, default per_page)
-        document.querySelectorAll('.clickable-row').forEach(row => {
-            row.addEventListener('click', function() {
-                const companyId = this.dataset.companyId;
-                const companyName = this.dataset.companyName;
-                const companyDomain = this.dataset.companyDomain;
-                loadContacts(companyId, companyName, companyDomain, 1, null);
-            });
-        });
-
-        // People pagination: Go button and per_page change (re-fetch from Apollo with page & per_page)
+        // Get selected job titles and seniorities (same as frontend people – for contacts and export)
         function applyContactsPagination() {
             var page = parseInt(document.getElementById('contactsPageInput').value, 10) || 1;
             var perPage = parseInt(document.getElementById('contactsPerPageSelect').value, 10) || 25;
@@ -918,15 +974,9 @@
             document.getElementById('companiesSection').style.display = 'block';
         });
 
-        // Select all companies on this page
-        const selectAllEl = document.getElementById('selectAllCompanies');
-        if (selectAllEl) {
-            selectAllEl.addEventListener('change', function() {
-                document.querySelectorAll('.company-checkbox').forEach(cb => cb.checked = this.checked);
-            });
-        }
+        // Select all is bound after each AJAX search via bindSelectAllCompanies()
 
-        // People search API call (same as loadContacts) – returns people with email enrich
+        // People pagination: Go button and per_page change (re-fetch from Apollo with page & per_page)
         // Export uses per_page 25 to limit credit burn; increase if you need more contacts per company
         function fetchPeopleForCompany(company, filters, csrfToken, perPage) {
             perPage = perPage != null ? perPage : 25;

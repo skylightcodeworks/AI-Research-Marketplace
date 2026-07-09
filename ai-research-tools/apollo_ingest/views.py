@@ -390,65 +390,22 @@ def build_people_payload(data: dict) -> dict:
 
 def company_search_view(request):
     """
-    View for searching companies via Apollo API.
-    Shows filters form and results table.
-    Uses post-redirect-get so refresh always shows default filters.
+    Show company search page with default filters.
+    Search is performed via AJAX (POST /api/companies/search/) — no full page reload.
     """
-    form = CompanySearchForm(initial=default_form_initial())
-    companies = None
-    total_count = 0
-    error = request.session.pop("company_search_error", None)
+    if request.method != "GET":
+        return HttpResponse(status=405)
 
     if request.GET.get("clear"):
-        request.session.pop("company_search_results", None)
-        request.session.modified = True
         return redirect("company_search")
 
-    stored = request.session.get("company_search_results")
-    if stored:
-        companies = stored.get("companies")
-        total_count = stored.get("total_count", 0)
-
-    if request.method == "POST":
-        post_form = CompanySearchForm(request.POST)
-        if post_form.is_valid():
-            try:
-                data = post_form.cleaned_data
-                data.setdefault("page", 1)
-                data.setdefault("per_page", 25)
-                data = merge_search_defaults(data)
-                payload = build_apollo_payload(data)
-                response = search_companies(payload)
-                organizations = response.get("organizations") or []
-                accounts = response.get("accounts") or []
-                raw_list = organizations if organizations else accounts
-                companies = normalize_companies(raw_list)
-                pagination = response.get("pagination", {})
-                total_count = pagination.get("total_entries", len(companies))
-                log_apollo_credits("POST / (company search)", CREDITS_COMPANY_SEARCH)
-                request.session["company_search_results"] = {
-                    "companies": companies,
-                    "total_count": total_count,
-                }
-                request.session.modified = True
-                return redirect("company_search")
-            except Exception as e:
-                request.session["company_search_error"] = str(e)
-                request.session.modified = True
-                return redirect("company_search")
-        request.session["company_search_error"] = "Please fix the form errors and try again."
-        request.session.modified = True
-        return redirect("company_search")
-
+    form = CompanySearchForm(initial=default_form_initial())
     return render(
         request,
         "apollo_ingest/company_search.html",
         {
             "form": form,
             "form_defaults": default_form_initial(),
-            "companies": companies,
-            "total_count": total_count,
-            "error": error,
         },
     )
 
