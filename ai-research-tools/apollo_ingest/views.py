@@ -14,17 +14,7 @@ from rest_framework import status
 from drf_spectacular.utils import extend_schema
 
 from .companies_form import CompanySearchForm
-from .apollo_defaults import (
-    DEFAULT_EMPLOYEE_RANGES,
-    DEFAULT_FUNDING_STAGES,
-    DEFAULT_INDUSTRY_EXCLUDE_IDS,
-    DEFAULT_INDUSTRY_IDS,
-    DEFAULT_LOCATIONS_INCLUDED,
-    DEFAULT_ORG_JOB_TITLES,
-    DEFAULT_ORGANIZATION_KEYWORD_EXCLUDE,
-    DEFAULT_ORGANIZATION_KEYWORDS,
-    default_form_initial,
-)
+from .apollo_defaults import default_form_initial
 from .apollo_service import (
     search_companies,
     search_people,
@@ -106,28 +96,6 @@ def normalize_companies(accounts: list) -> list:
     return companies
 
 
-def merge_search_defaults(data: dict) -> dict:
-    """Apply ICP default filters when form fields are empty (e.g. not in HTML)."""
-    merged = dict(data)
-    if not merged.get("employee_ranges") and merged.get("employees_min") is None and merged.get("employees_max") is None:
-        merged["employee_ranges"] = "; ".join(DEFAULT_EMPLOYEE_RANGES)
-    if not merged.get("industries"):
-        merged["industries"] = list(DEFAULT_INDUSTRY_IDS)
-    if not merged.get("industries_exclude"):
-        merged["industries_exclude"] = list(DEFAULT_INDUSTRY_EXCLUDE_IDS)
-    if not (merged.get("organization_keyword") or "").strip():
-        merged["organization_keyword"] = ", ".join(DEFAULT_ORGANIZATION_KEYWORDS)
-    if not (merged.get("organization_keyword_exclude") or "").strip():
-        merged["organization_keyword_exclude"] = ", ".join(DEFAULT_ORGANIZATION_KEYWORD_EXCLUDE)
-    if not (merged.get("funding_stages") or "").strip():
-        merged["funding_stages"] = ", ".join(DEFAULT_FUNDING_STAGES)
-    if not (merged.get("organization_job_titles") or "").strip():
-        merged["organization_job_titles"] = ", ".join(DEFAULT_ORG_JOB_TITLES)
-    if not (merged.get("locations_included") or "").strip():
-        merged["locations_included"] = DEFAULT_LOCATIONS_INCLUDED
-    return merged
-
-
 def build_apollo_payload(data: dict) -> dict:
     """
     Build Apollo mixed_companies/search payload (organization search only).
@@ -200,9 +168,7 @@ def build_apollo_payload(data: dict) -> dict:
         min_val = emp_min if emp_min is not None else 1
         max_val = emp_max if emp_max is not None else 1000000
         payload["organization_num_employees_ranges"] = [f"{min_val},{max_val}"]
-    else:
-        from .apollo_defaults import DEFAULT_EMPLOYEE_RANGES
-        payload["organization_num_employees_ranges"] = list(DEFAULT_EMPLOYEE_RANGES)
+    # Empty = no employee filter (user cleared the field intentionally)
 
     # Revenue range → revenue_range { min, max } (values in millions as per form)
     rev_min = data.get("revenue_min")
@@ -428,7 +394,8 @@ class CompanySearchAPIView(APIView):
             data = dict(serializer.validated_data)
             data.setdefault("page", 1)
             data.setdefault("per_page", 25)
-            data = merge_search_defaults(data)
+            # No server-side defaults: empty field = no filter sent to Apollo.
+            # Defaults sirf UI form ki initial values se aate hain.
             payload = build_apollo_payload(data)
             response = search_companies(payload)
             organizations = response.get("organizations") or []
@@ -496,7 +463,9 @@ class TagsSearchAPIView(APIView):
             )
 
     def post(self, request):
-        q = (request.data.get("q") or request.data.get("q_tag_fuzzy_name") or "").strip()
+        q = (
+            request.data.get("q") or request.data.get("q_tag_fuzzy_name") or ""
+        ).strip()
         if not q:
             return Response(
                 {"error": "Body 'q' or 'q_tag_fuzzy_name' required"},
@@ -545,6 +514,30 @@ class PeopleSearchAPIView(APIView):
             )
             if total_count is None:
                 total_count = 0
+
+            # Debug: why fewer contacts in UI vs raw Apollo? Show filters that narrow results.
+            titles_filter = payload.get("person_titles") or []
+            seniorities_filter = payload.get("person_seniorities") or []
+            debug_lines = [
+                "====== People search DEBUG ======",
+                "Org: id=%s domains=%s"
+                % (
+                    payload.get("organization_ids"),
+                    payload.get("q_organization_domains_list"),
+                ),
+                "Filters sent to Apollo: person_titles=%s | person_seniorities=%s"
+                % (titles_filter or "NONE", seniorities_filter or "NONE"),
+                "Apollo result: %s people on this page (page=%s, per_page=%s) | total matching filters: %s"
+                % (len(people), payload.get("page"), payload.get("per_page"), total_count),
+            ]
+            if titles_filter or seniorities_filter:
+                debug_lines.append(
+                    "NOTE: total %s = sirf filtered contacts. Job Titles/Seniorities filters hatao to org ke SAARE contacts milenge (Postman jaisa)."
+                    % total_count
+                )
+            debug_msg = "\n".join(debug_lines) + "\n================================="
+            logger.info(debug_msg)
+            print(debug_msg)
 
             # Enrich each person to get email, linkedin_url, etc. (consumes credits)
             ids = [p["id"] for p in people if p.get("id")]
@@ -657,7 +650,8 @@ def get_people_for_company(
             search_credits = search_calls * CREDITS_PEOPLE_SEARCH
             total_credits = search_credits + enrich_credits
             log_apollo_credits(
-                "get_people_for_company (org_id=%s)" % (organization_id or domain or "?"),
+                "get_people_for_company (org_id=%s)"
+                % (organization_id or domain or "?"),
                 total_credits,
                 detail=f"search={search_calls} enrich={enrich_credits} ({len(ids)} contacts)",
             )
@@ -666,8 +660,7 @@ def get_people_for_company(
 
 def _format_person_location(p: dict) -> str:
     return (
-        ", ".join(filter(None, [p.get("city"), p.get("state"), p.get("country")]))
-        or ""
+        ", ".join(filter(None, [p.get("city"), p.get("state"), p.get("country")])) or ""
     )
 
 
@@ -826,12 +819,17 @@ def export_companies_view(request):
             {"error": "No companies selected"}, status=status.HTTP_400_BAD_REQUEST
         )
     # Export: use people[] from request if present (frontend called people/search per company); else fetch server-side
-    companies_with_people = sum(1 for c in companies if isinstance(c.get("people"), list) and len(c.get("people") or []) > 0)
+    companies_with_people = sum(
+        1
+        for c in companies
+        if isinstance(c.get("people"), list) and len(c.get("people") or []) > 0
+    )
     fetch_count = len(companies) - companies_with_people
     log_apollo_credits(
         request.path or "/api/export/companies/",
         0,
-        detail="%s companies with people[] from request, %s will fetch server-side (see below)" % (companies_with_people, fetch_count),
+        detail="%s companies with people[] from request, %s will fetch server-side (see below)"
+        % (companies_with_people, fetch_count),
     )
     logger.info(
         "Export: %s company(ies) | %s with people[] (no extra credits) | %s to fetch server-side | parallel workers=%s",
