@@ -17,6 +17,7 @@ from apollo_ingest.views import (
     TagsSearchAPIView,
     PeopleSearchAPIView,
     export_companies_view,
+    export_all_matching_view,
 )
 
 urlpatterns = [
@@ -36,6 +37,7 @@ urlpatterns = [
     path("api/tags/search/", TagsSearchAPIView.as_view(), name="api_tags_search"),
     path("api/people/search/", PeopleSearchAPIView.as_view(), name="api_people_search"),
     path("api/export/companies/", export_companies_view, name="api_export_companies"),
+    path("export/all/", export_all_matching_view, name="export_all_matching"),
     # Swagger / OpenAPI
     path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
     path(

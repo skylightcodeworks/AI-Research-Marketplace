@@ -46,7 +46,7 @@ def default_form_initial() -> dict:
         "job_titles": [t.lower() for t in DEFAULT_JOB_TITLES],
         "seniorities": list(DEFAULT_SENIORITIES),
         "page": 1,
-        "per_page": 25,
+        "per_page": 100,
     }
 
 

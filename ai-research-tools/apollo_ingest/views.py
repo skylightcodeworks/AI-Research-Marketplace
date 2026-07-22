@@ -732,11 +732,17 @@ def _fetch_export_company_bundle(
     cid = company.get("id")
     cname = company.get("name") or "company"
     cdomain = (company.get("domain") or company.get("primary_domain") or "").strip()
-    technologies, tech_credits = _fetch_company_technologies(
-        organization_id=cid,
-        domain=cdomain or None,
-        name=cname,
-    )
+    errors = []
+    technologies, tech_credits = "", 0
+    try:
+        technologies, tech_credits = _fetch_company_technologies(
+            organization_id=cid,
+            domain=cdomain or None,
+            name=cname,
+        )
+    except Exception as e:
+        errors.append("technologies: %s" % e)
+        logger.warning("Export tech failed id=%s name=%s: %s", cid, cname, e)
     people = company.get("people") if isinstance(company.get("people"), list) else []
     server_fetched = False
     if not people:
@@ -751,7 +757,8 @@ def _fetch_export_company_bundle(
                 per_page=100,
             )
         except Exception as e:
-            logger.warning("Export: skip company id=%s name=%s: %s", cid, cname, e)
+            errors.append("people: %s" % e)
+            logger.warning("Export people failed id=%s name=%s: %s", cid, cname, e)
             people = []
     return {
         "cname": cname,
@@ -760,6 +767,7 @@ def _fetch_export_company_bundle(
         "people": people,
         "tech_credits": tech_credits,
         "server_fetched": server_fetched,
+        "error": "; ".join(errors),
     }
 
 
@@ -793,8 +801,80 @@ def _fetch_export_bundles_parallel(
                     "people": [],
                     "tech_credits": 0,
                     "server_fetched": False,
+                    "error": str(e),
                 }
     return [bundle for bundle in results if bundle is not None]
+
+
+def _append_export_bundle_rows(ws_contacts, ws_tech, bundle: dict) -> None:
+    """Write one company bundle into Contacts + Technologies sheets (error column if failed)."""
+    cname = bundle.get("cname") or ""
+    country = bundle.get("company_country") or ""
+    error = (bundle.get("error") or "").strip()
+    if error:
+        ws_contacts.append([cname, country, "", "", "", "", "", "", error])
+        ws_tech.append([cname, "", error])
+        return
+    ws_tech.append([cname, bundle.get("technologies") or "", ""])
+    people = bundle.get("people") or []
+    if not people:
+        ws_contacts.append([cname, country, "", "", "", "", "", "", ""])
+        return
+    for p in people:
+        ws_contacts.append(
+            [
+                cname,
+                country,
+                p.get("name") or "",
+                p.get("email") or "",
+                p.get("linkedin_url") or "",
+                p.get("title") or "",
+                p.get("seniority") or "",
+                _format_person_location(p),
+                "",
+            ]
+        )
+
+
+def _build_export_workbooks():
+    wb_contacts = Workbook()
+    ws = wb_contacts.active
+    ws.title = "Contacts"
+    ws.append(
+        [
+            "Company Name",
+            "Company Country",
+            "Name",
+            "Email",
+            "LinkedIn",
+            "Job Title",
+            "Seniority",
+            "Location",
+            "Error",
+        ]
+    )
+    wb_technologies = Workbook()
+    ws_tech = wb_technologies.active
+    ws_tech.title = "Technologies"
+    ws_tech.append(["Company Name", "Technologies", "Error"])
+    ws_tech.column_dimensions["A"].width = 30
+    ws_tech.column_dimensions["B"].width = 120
+    return wb_contacts, ws, wb_technologies, ws_tech
+
+
+def _zip_export_workbooks(wb_contacts, wb_technologies) -> bytes:
+    contacts_buffer = io.BytesIO()
+    wb_contacts.save(contacts_buffer)
+    contacts_buffer.seek(0)
+    technologies_buffer = io.BytesIO()
+    wb_technologies.save(technologies_buffer)
+    technologies_buffer.seek(0)
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("companies_contacts.xlsx", contacts_buffer.getvalue())
+        zf.writestr("companies_technologies.xlsx", technologies_buffer.getvalue())
+    zip_buffer.seek(0)
+    return zip_buffer.getvalue()
 
 
 @require_http_methods(["POST"])
@@ -810,15 +890,12 @@ def export_companies_view(request):
     try:
         body = json.loads(request.body)
     except Exception:
-        return Response({"error": "Invalid JSON"}, status=status.HTTP_400_BAD_REQUEST)
+        return HttpResponse("Invalid JSON", status=400)
     companies = body.get("companies") or []
     job_titles = body.get("job_titles") or []
     seniorities = body.get("seniorities") or []
     if not companies:
-        return Response(
-            {"error": "No companies selected"}, status=status.HTTP_400_BAD_REQUEST
-        )
-    # Export: use people[] from request if present (frontend called people/search per company); else fetch server-side
+        return HttpResponse("No companies selected", status=400)
     companies_with_people = sum(
         1
         for c in companies
@@ -832,77 +909,99 @@ def export_companies_view(request):
         % (companies_with_people, fetch_count),
     )
     logger.info(
-        "Export: %s company(ies) | %s with people[] (no extra credits) | %s to fetch server-side | parallel workers=%s",
+        "Export: %s company(ies) | %s with people[] | %s to fetch | workers=%s",
         len(companies),
         companies_with_people,
         fetch_count,
         min(EXPORT_MAX_WORKERS, len(companies)),
     )
-    zip_buffer = io.BytesIO()
-    wb_contacts = Workbook()
-    ws = wb_contacts.active
-    ws.title = "Contacts"
-    ws.append(
-        [
-            "Company Name",
-            "Company Country",
-            "Name",
-            "Email",
-            "LinkedIn",
-            "Job Title",
-            "Seniority",
-            "Location",
-        ]
-    )
-    wb_technologies = Workbook()
-    ws_tech = wb_technologies.active
-    ws_tech.title = "Technologies"
-    ws_tech.append(["Company Name", "Technologies"])
-    ws_tech.column_dimensions["A"].width = 30
-    ws_tech.column_dimensions["B"].width = 120
-
+    wb_contacts, ws, wb_technologies, ws_tech = _build_export_workbooks()
     bundles = _fetch_export_bundles_parallel(companies, job_titles, seniorities)
-    server_side_fetches = 0
-    tech_credits = 0
     for bundle in bundles:
-        tech_credits += bundle.get("tech_credits") or 0
-        if bundle.get("server_fetched"):
-            server_side_fetches += 1
-        ws_tech.append([bundle["cname"], bundle["technologies"]])
-        for p in bundle.get("people") or []:
-            ws.append(
-                [
-                    bundle["cname"],
-                    bundle["company_country"],
-                    p.get("name") or "",
-                    p.get("email") or "",
-                    p.get("linkedin_url") or "",
-                    p.get("title") or "",
-                    p.get("seniority") or "",
-                    _format_person_location(p),
-                ]
-            )
-    contacts_buffer = io.BytesIO()
-    wb_contacts.save(contacts_buffer)
-    contacts_buffer.seek(0)
-    technologies_buffer = io.BytesIO()
-    wb_technologies.save(technologies_buffer)
-    technologies_buffer.seek(0)
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("companies_contacts.xlsx", contacts_buffer.getvalue())
-        zf.writestr("companies_technologies.xlsx", technologies_buffer.getvalue())
-    zip_buffer.seek(0)
-    if server_side_fetches > 0 or tech_credits > 0:
-        logger.info(
-            "Export done: %s companies total, %s fetched server-side (people), %s org enrich credits (technologies)",
-            len(companies),
-            server_side_fetches,
-            tech_credits,
-        )
-        print(
-            "====== Export summary: %s companies, %s server-side people fetches, %s org enrich credits ======"
-            % (len(companies), server_side_fetches, tech_credits)
-        )
-    response = HttpResponse(zip_buffer.getvalue(), content_type="application/zip")
+        _append_export_bundle_rows(ws, ws_tech, bundle)
+    response = HttpResponse(
+        _zip_export_workbooks(wb_contacts, wb_technologies),
+        content_type="application/zip",
+    )
     response["Content-Disposition"] = 'attachment; filename="companies_export.zip"'
+    return response
+
+
+EXPORT_COMPANY_PAGE_SIZE = 100  # Apollo company search page size for export-all
+
+
+@require_http_methods(["POST"])
+@ensure_csrf_cookie
+def export_all_matching_view(request):
+    """
+    Export ALL companies matching current search filters.
+    Django form POST (not DRF) — browser waits for the file download.
+    Internally paginates Apollo company search at 100/page until done.
+    Per-company errors are written to the Error column; export continues.
+    """
+    form = CompanySearchForm(request.POST)
+    if not form.is_valid():
+        return HttpResponse(
+            "Invalid filters. Go back and try again.",
+            status=400,
+            content_type="text/plain",
+        )
+    data = form.cleaned_data
+    job_titles = data.get("job_titles") or []
+    seniorities = data.get("seniorities") or []
+    wb_contacts, ws, wb_technologies, ws_tech = _build_export_workbooks()
+
+    page = 1
+    total_companies = 0
+    while True:
+        page_data = dict(data)
+        page_data["page"] = page
+        page_data["per_page"] = EXPORT_COMPANY_PAGE_SIZE
+        try:
+            apollo_resp = search_companies(build_apollo_payload(page_data))
+        except Exception as e:
+            logger.exception("Export all: company search page %s failed: %s", page, e)
+            ws.append(["", "", "", "", "", "", "", "", "company search page %s: %s" % (page, e)])
+            break
+
+        raw_list = apollo_resp.get("organizations") or apollo_resp.get("accounts") or []
+        if not raw_list:
+            break
+
+        companies = [
+            {
+                "id": c.get("id"),
+                "name": c.get("name"),
+                "domain": c.get("primary_domain"),
+                "country": c.get("country"),
+                "city": c.get("city"),
+            }
+            for c in normalize_companies(raw_list)
+        ]
+        total_companies += len(companies)
+        print(
+            "====== Export all: Apollo page %s (%s companies this page, %s so far) ======"
+            % (page, len(companies), total_companies)
+        )
+        log_apollo_credits(
+            "export_all/companies page=%s" % page,
+            CREDITS_COMPANY_SEARCH,
+            detail="%s companies" % len(companies),
+        )
+
+        for bundle in _fetch_export_bundles_parallel(companies, job_titles, seniorities):
+            _append_export_bundle_rows(ws, ws_tech, bundle)
+
+        pagination = apollo_resp.get("pagination") or {}
+        total_pages = int(pagination.get("total_pages") or page)
+        if page >= total_pages:
+            break
+        page += 1
+
+    print("====== Export all done: %s companies across %s page(s) ======" % (total_companies, page))
+    response = HttpResponse(
+        _zip_export_workbooks(wb_contacts, wb_technologies),
+        content_type="application/zip",
+    )
+    response["Content-Disposition"] = 'attachment; filename="companies_export_all.zip"'
     return response

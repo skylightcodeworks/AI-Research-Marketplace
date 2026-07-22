@@ -492,9 +492,14 @@
                             <h5 class="mb-0">Search Results</h5>
                             <span class="badge bg-light text-dark px-3 py-2" id="searchTotalCount">0 companies found</span>
                         </div>
-                        <button type="button" class="btn btn-export" id="exportSelectedBtn" title="Download ZIP with contacts Excel + technologies Excel">
-                            Export selected (Contacts + Technologies ZIP)
-                        </button>
+                        <div class="d-flex gap-2 flex-wrap">
+                            <button type="button" class="btn btn-export" id="exportSelectedBtn" title="Download ZIP for checked companies only">
+                                Export selected
+                            </button>
+                            <button type="button" class="btn btn-export" id="exportAllBtn" title="Export ALL matching companies (Apollo 100/page until done). Long-running form download.">
+                                Export all matching
+                            </button>
+                        </div>
                     </div>
                     <div id="companiesTableWrap"></div>
                 </div>
@@ -1078,6 +1083,32 @@
                 if (e.target.id === 'exportSelectedBtn' || (e.target.closest && e.target.closest('#exportSelectedBtn'))) {
                     onExportClick();
                 }
+            });
+        }
+
+        // Export ALL matching filters: Django form POST (no AJAX timeout). Backend paginates Apollo 100/page.
+        var exportAllBtn = document.getElementById('exportAllBtn');
+        if (exportAllBtn) {
+            exportAllBtn.addEventListener('click', function() {
+                if (!confirm('Export ALL companies matching current filters?\n\nThis pages Apollo at 100 companies/page until done and can take a long time. Per-company errors are written to the Error column.')) {
+                    return;
+                }
+                var src = document.getElementById('searchForm');
+                var form = document.createElement('form');
+                form.method = 'POST';
+                form.action = '{% url "export_all_matching" %}';
+                form.style.display = 'none';
+                var fd = new FormData(src);
+                fd.forEach(function(value, key) {
+                    var input = document.createElement('input');
+                    input.type = 'hidden';
+                    input.name = key;
+                    input.value = value;
+                    form.appendChild(input);
+                });
+                document.body.appendChild(form);
+                document.body.classList.add('loading');
+                form.submit();
             });
         }
     </script>

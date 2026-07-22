@@ -318,7 +318,7 @@ class CompanySearchForm(forms.Form):
     )
     per_page = forms.TypedChoiceField(
         required=False,
-        initial=25,
+        initial=100,
         coerce=int,
         choices=[(10, "10"), (25, "25"), (50, "50"), (100, "100")],
         label="Per page",
